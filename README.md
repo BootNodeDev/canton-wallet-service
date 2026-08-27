@@ -9,14 +9,19 @@ wallet-internal party onboarding.
 
 ## Install
 
-Not published to npm yet. Consume it from git, pinned to a tag; the package's
-`prepare` script builds `dist/` on install, so the `canton-wallet-service`
-binary is ready straight after:
+Not published to npm yet. Consume it from git, pinned to a tag. No `dist/` is
+committed, so the binary comes from the package's own `prepare` build — and pnpm
+blocks a dependency's build scripts by default, so it has to be allowed through
+before the install produces anything runnable:
 
 ```bash
-pnpm add -D "git+ssh://git@github.com/BootNodeDev/canton-wallet-service.git#v0.1.0"
+pnpm add -D "git+ssh://git@github.com/BootNodeDev/canton-wallet-service.git#v0.1.1"
+pnpm approve-builds          # allow this package's `prepare`, then re-install
 pnpm exec canton-wallet-service
 ```
+
+pnpm matches a git dependency by its resolved tarball id, so the allowance is
+keyed to a commit sha and moving the tag means re-approving.
 
 Configuration is environment-only (see `.env.example`), so a consumer supplies
 it however it already supplies env to its own processes.

@@ -14,7 +14,7 @@ A consumer-dApp-agnostic Express JSON-RPC bridge between a CIP-0103 wallet and a
 - Keep `ledgerApi` as a participant-native pass-through. Do not silently translate request bodies or wrap participant responses.
 - Keep token handling inside this service boundary. Do not expose `CANTON_BACKEND_TOKEN` to the dApp or wallet UI.
 - Configuration is environment-only, read in `src/config.ts`. Never read a consumer's config file.
-- `@canton-network/wallet-sdk` is pinned exact and `@canton-network/core-acs-reader` held at `1.12.0` through `pnpm.overrides`, because the SDK floats that transitive dependency. Bump either deliberately, then re-run the local loop.
+- `@canton-network/wallet-sdk` is pinned exact and `@canton-network/core-acs-reader` held at `1.12.0` through the `overrides` block in `pnpm-workspace.yaml`, because the SDK floats that transitive dependency. Bump either deliberately, then re-run the local loop.
 
 ## Code Style
 
