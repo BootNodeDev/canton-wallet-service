@@ -692,7 +692,15 @@ export const createRpc = (config: WalletServiceConfig, deps: RpcDependencies = {
     if (config.canton.backendToken === undefined) {
       throw new Error('CANTON_BACKEND_TOKEN is required for Canton JSON API calls')
     }
-    const url = new URL(p.resource, config.canton.jsonApiUrl)
+    // `resource` comes from the dApp, and an absolute or protocol-relative one makes
+    // `new URL` discard the base — which would send the Authorization header below, and
+    // with it CANTON_BACKEND_TOKEN, to a host the caller chose. The token boundary is
+    // this service's, so a resource resolving off the configured origin is refused.
+    const base = new URL(config.canton.jsonApiUrl)
+    const url = new URL(p.resource, base)
+    if (url.origin !== base.origin) {
+      throw new InvalidParams('resource must resolve to the configured Canton JSON API origin')
+    }
     for (const [key, value] of Object.entries(p.query ?? {})) {
       url.searchParams.set(key, String(value))
     }
@@ -707,7 +715,7 @@ export const createRpc = (config: WalletServiceConfig, deps: RpcDependencies = {
     if (method !== 'GET' && method !== 'HEAD' && p.body !== undefined) {
       init.body = JSON.stringify(p.body)
     }
-    const response = await fetch(url, init)
+    const response = await fetchImpl(url, init)
     const text = await response.text()
     const isJson =
       text.length > 0 && response.headers.get('content-type')?.includes('json') === true

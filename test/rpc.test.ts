@@ -190,6 +190,64 @@ describe('ledgerApi pass-through', () => {
     assert.notEqual(res.error.code, -32602)
     assert.ok(!String(res.error.message).includes('Only POST'))
   })
+
+  it('sends the backend token only to the configured JSON API origin', async () => {
+    // Scenario: `resource` is the dApp's parameter, so it must not be able to choose
+    // where the Authorization header goes. CANTON_BACKEND_TOKEN is this service's
+    // boundary, and an off-origin resource must be refused before any request is made.
+    const offOrigin = [
+      'https://evil.example/collect',
+      '//evil.example/collect',
+      'http://localhost:3013@evil.example/collect',
+      'file:///etc/passwd',
+    ]
+
+    for (const resource of offOrigin) {
+      let called = false
+      const rpc = createRpc(withToken(), {
+        fetch: async () => {
+          called = true
+          return new Response('{}', { headers: { 'content-type': 'application/json' } })
+        },
+      })
+      const res = (await rpc.handle({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'ledgerApi',
+        params: { requestMethod: 'get', resource },
+      })) as JsonRpcResponse
+
+      assert.ok('error' in res, `${resource} should be refused`)
+      assert.equal(res.error.code, -32602, `${resource} should be a params error`)
+      assert.match(res.error.message, /configured Canton JSON API origin/)
+      assert.equal(called, false, `${resource} must not reach fetch at all`)
+    }
+  })
+
+  it('still allows a relative resource and an absolute one on the configured origin', async () => {
+    for (const resource of ['/v2/version', 'http://localhost:3013/v2/version']) {
+      const seen: { url?: string; authorization?: string } = {}
+      const rpc = createRpc(withToken(), {
+        fetch: async (input, init) => {
+          seen.url = String(input)
+          seen.authorization = new Headers(init?.headers).get('authorization') ?? undefined
+          return new Response('{"ok":true}', {
+            headers: { 'content-type': 'application/json' },
+          })
+        },
+      })
+      const res = (await rpc.handle({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'ledgerApi',
+        params: { requestMethod: 'get', resource },
+      })) as JsonRpcResponse
+
+      assert.ok('result' in res, `${resource} should pass through`)
+      assert.equal(seen.url, 'http://localhost:3013/v2/version')
+      assert.equal(seen.authorization, 'Bearer backend.jwt')
+    }
+  })
 })
 
 describe('CIP-56 token helpers', () => {

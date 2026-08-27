@@ -15,7 +15,7 @@ blocks a dependency's build scripts by default, so it has to be allowed through
 before the install produces anything runnable:
 
 ```bash
-pnpm add -D "git+ssh://git@github.com/BootNodeDev/canton-wallet-service.git#v0.1.1"
+pnpm add -D "git+ssh://git@github.com/BootNodeDev/canton-wallet-service.git#v0.1.2"
 pnpm approve-builds          # allow this package's `prepare`, then re-install
 pnpm exec canton-wallet-service
 ```
@@ -69,7 +69,7 @@ Service-specific methods:
 | -------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `prepareTransaction` | the wallet                      | Calls Canton interactive submission prepare and returns the prepared transaction payload/hash for local signing. |
 | `executePrepared`    | the wallet                      | Submits the wallet's signature over a prepared transaction to Canton.                                            |
-| `ledgerApi`          | the wallet on behalf of the dApp | Proxies app-user JSON API reads/writes and injects `CANTON_BACKEND_TOKEN`.                                       |
+| `ledgerApi`          | the wallet on behalf of the dApp | Proxies app-user JSON API reads/writes and injects `CANTON_BACKEND_TOKEN`. `resource` must resolve to the configured JSON API origin; anything off it is refused with `-32602`, since the injected token would otherwise travel with it. |
 
 ### CIP-56 token methods
 
