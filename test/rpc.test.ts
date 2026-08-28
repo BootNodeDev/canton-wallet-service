@@ -32,7 +32,7 @@ const withToken = () => ({
   canton: {
     ...baseConfig().canton,
     backendToken: 'backend.jwt',
-    tokenSource: 'env' as const,
+    tokenSource: 'static' as const,
   },
 })
 
@@ -1154,5 +1154,99 @@ describe('error serialization', () => {
     const data = errorData(new Error('boom'))
     assert.equal(data.name, 'Error')
     assert.equal(data.message, 'boom')
+  })
+})
+
+describe('canton credentials', () => {
+  const oauthConfig = () => ({
+    ...baseConfig(),
+    canton: {
+      ...baseConfig().canton,
+      tokenSource: 'oauth' as const,
+      oauth: {
+        tokenUrl: 'https://auth.example/token',
+        clientId: 'cid',
+        clientSecret: 'secret',
+        scope: 'daml_ledger_api',
+        refreshSkewMs: 60_000,
+      },
+    },
+  })
+
+  it('sends the static token as the ledgerApi bearer', async () => {
+    const seen: { authorization?: string } = {}
+    const rpc = createRpc(withToken(), {
+      fetch: async (_url, init) => {
+        seen.authorization = new Headers(init?.headers).get('authorization') ?? undefined
+        return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+      },
+    })
+
+    await rpc.handle({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'ledgerApi',
+      params: { requestMethod: 'GET', resource: '/v2/version' },
+    })
+
+    assert.equal(seen.authorization, 'Bearer backend.jwt')
+  })
+
+  it('sends the OAuth token as the ledgerApi bearer', async () => {
+    // Scenario: the hosted-validator path must reach the participant with the
+    // credential the OAuth provider issued, not a pasted one.
+    const seen: { authorization?: string } = {}
+    const rpc = createRpc(oauthConfig(), {
+      tokenProvider: { getToken: async () => 'oauth.jwt' },
+      fetch: async (_url, init) => {
+        seen.authorization = new Headers(init?.headers).get('authorization') ?? undefined
+        return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+      },
+    })
+
+    await rpc.handle({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'ledgerApi',
+      params: { requestMethod: 'GET', resource: '/v2/version' },
+    })
+
+    assert.equal(seen.authorization, 'Bearer oauth.jwt')
+  })
+
+  it('rebuilds the SDK when the OAuth provider rotates the token', async () => {
+    // Scenario: the SDK captures its bearer at construction, so a long-running
+    // service would keep presenting an expired token unless the rotation
+    // discards the cached SDK.
+    const tokens = ['first.jwt', 'first.jwt', 'second.jwt']
+    const built: string[] = []
+    const rpc = createRpc(oauthConfig(), {
+      tokenProvider: { getToken: async () => tokens.shift() ?? 'second.jwt' },
+      sdkFactory: async (options) => {
+        built.push((options as { auth: { token: string } }).auth.token)
+        return {}
+      },
+    })
+
+    await rpc.getSdk()
+    await rpc.getSdk()
+    assert.deepEqual(built, ['first.jwt'])
+
+    await rpc.getSdk()
+    assert.deepEqual(built, ['first.jwt', 'second.jwt'])
+  })
+
+  it('refuses Canton calls when no credentials are configured', async () => {
+    // Scenario: a config with neither a static token nor OAuth must say so by
+    // variable name instead of sending an empty bearer at the participant.
+    const rpc = createRpc(baseConfig())
+
+    await assert.rejects(rpc.getSdk(), /Set CANTON_BACKEND_TOKEN, or the EXTERNAL_OAUTH_\*/)
+  })
+
+  it('reports the token source in serviceInfo', () => {
+    const canton = createRpc(withToken()).serviceInfo().canton as Record<string, unknown>
+    assert.equal(canton.tokenSource, 'static')
+    assert.equal(canton.hasBackendToken, true)
   })
 })

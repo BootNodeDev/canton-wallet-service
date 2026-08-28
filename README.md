@@ -43,12 +43,44 @@ The image builds from this repository root and needs no wider build context:
 docker build -t canton-wallet-service .
 ```
 
+`docker-compose.yml` builds that image and reads an `.env` beside it, which is
+how the service is deployed on a host of its own:
+
+```bash
+cp .env.example .env   # then fill in the credentials for that network
+docker compose up --build -d
+```
+
 ## Token
 
 Real Canton calls require a bearer token the participant's ledger API accepts.
-This service does not mint one at boot: it requires `CANTON_BACKEND_TOKEN` and
-refuses to start without it. Mint it wherever the participant's signing recipe
-lives; on Splice LocalNet that is a dev JWT with subject `ledger-api-user`.
+This service never mints one from a signing recipe; it takes credentials one of
+two ways, and refuses to start with neither.
+
+**Static token.** `CANTON_BACKEND_TOKEN` is a token minted wherever the
+participant's signing recipe lives — on Splice LocalNet, a dev JWT with subject
+`ledger-api-user`. This is the LocalNet path and needs nothing else.
+
+**OAuth client credentials.** A hosted validator issues short-lived tokens, so
+setting any `EXTERNAL_OAUTH_*` variable switches the service to fetching one
+itself by client-credentials grant, caching it, and refreshing a minute before
+it expires. `CANTON_BACKEND_TOKEN` is then neither read nor needed.
+
+| Variable                       | Purpose                                        |
+| ------------------------------ | ---------------------------------------------- |
+| `EXTERNAL_OAUTH_TOKEN_URL`     | The provider's token endpoint.                 |
+| `EXTERNAL_OAUTH_CLIENT_ID`     | Machine-to-machine client id.                  |
+| `EXTERNAL_OAUTH_CLIENT_SECRET` | Its secret. Never comes from a preset.         |
+| `EXTERNAL_OAUTH_SCOPE`         | Usually `daml_ledger_api`.                     |
+| `EXTERNAL_PRESET`              | Optional. Fills the rest for a known validator.|
+
+On the OAuth path no localhost default is allowed to stand in for an endpoint:
+`CANTON_JSON_API_URL` and the three `SPLICE_*` URLs must name the hosted
+validator, or come from `EXTERNAL_PRESET`. Anything missing or malformed fails
+at startup naming the variable rather than at the first Canton call.
+
+A preset (`src/presets/`) is checked-in source, so it carries endpoints and
+public OAuth fields only.
 
 ## API Boundary
 
@@ -69,7 +101,7 @@ Service-specific methods:
 | -------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `prepareTransaction` | the wallet                      | Calls Canton interactive submission prepare and returns the prepared transaction payload/hash for local signing. |
 | `executePrepared`    | the wallet                      | Submits the wallet's signature over a prepared transaction to Canton.                                            |
-| `ledgerApi`          | the wallet on behalf of the dApp | Proxies app-user JSON API reads/writes and injects `CANTON_BACKEND_TOKEN`. `resource` must resolve to the configured JSON API origin; anything off it is refused with `-32602`, since the injected token would otherwise travel with it. |
+| `ledgerApi`          | the wallet on behalf of the dApp | Proxies app-user JSON API reads/writes and injects the Canton bearer token. `resource` must resolve to the configured JSON API origin; anything off it is refused with `-32602`, since the injected token would otherwise travel with it. |
 
 ### CIP-56 token methods
 

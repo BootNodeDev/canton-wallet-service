@@ -1,5 +1,7 @@
 import { SDK } from '@canton-network/wallet-sdk'
 import type { WalletServiceConfig } from './config.ts'
+import type { CantonTokenProvider } from './oauthToken.ts'
+import { createTokenProvider } from './tokenProvider.ts'
 import type {
   ConnectResult,
   JsonRpcError,
@@ -92,6 +94,7 @@ type RpcDependencies = {
   fetch?: typeof fetch
   now?: () => Date
   sleep?: (ms: number) => Promise<void>
+  tokenProvider?: CantonTokenProvider
 }
 
 type ActiveJsContractReader = {
@@ -529,6 +532,8 @@ export const createRpc = (config: WalletServiceConfig, deps: RpcDependencies = {
       return await SDK.create(options as never)
     })
   const fetchImpl = deps.fetch ?? fetch
+  const cantonTokenProvider =
+    deps.tokenProvider ?? createTokenProvider(config, { fetch: fetchImpl })
   const now = deps.now ?? (() => new Date())
   const sleep =
     deps.sleep ??
@@ -538,29 +543,47 @@ export const createRpc = (config: WalletServiceConfig, deps: RpcDependencies = {
       }))
   let sdkPromise: Promise<WalletSdk> | undefined
   let tokenSdkPromise: Promise<Cip56TokenSdk> | undefined
+  let sdkToken: string | undefined
+  let tokenSdkToken: string | undefined
+
+  // Centralizes bearer lookup so every request can refresh before Canton calls.
+  const getCantonToken = async (): Promise<string> => {
+    if (cantonTokenProvider === undefined) {
+      throw new Error(
+        'No Canton credentials configured. Set CANTON_BACKEND_TOKEN, or the EXTERNAL_OAUTH_* variables for a hosted validator.',
+      )
+    }
+    return await cantonTokenProvider.getToken()
+  }
 
   const getSdk = async (): Promise<WalletSdk> => {
-    if (config.canton.backendToken === undefined) {
-      throw new Error('CANTON_BACKEND_TOKEN is required for Canton JSON API calls')
+    const token = await getCantonToken()
+    // The SDK captures the bearer at construction, so a refreshed token needs a new one.
+    if (sdkToken !== token) {
+      sdkPromise = undefined
+      sdkToken = token
     }
     sdkPromise ??= sdkFactory({
-      auth: { method: 'static', token: config.canton.backendToken },
+      auth: { method: 'static', token },
       ledgerClientUrl: config.canton.jsonApiUrl,
       logAdapter: 'console',
     })
       .then((sdk) => sdk as WalletSdk)
       .catch((cause: unknown) => {
         sdkPromise = undefined
+        sdkToken = undefined
         throw new Error('Canton wallet SDK failed to initialize', { cause })
       })
     return await sdkPromise
   }
 
   const getTokenSdk = async (): Promise<Cip56TokenSdk> => {
-    if (config.canton.backendToken === undefined) {
-      throw new Error('CANTON_BACKEND_TOKEN is required for CIP-56 token helper calls')
+    const token = await getCantonToken()
+    if (tokenSdkToken !== token) {
+      tokenSdkPromise = undefined
+      tokenSdkToken = token
     }
-    const auth = { method: 'static', token: config.canton.backendToken }
+    const auth = { method: 'static', token }
     tokenSdkPromise ??= sdkFactory({
       auth,
       ledgerClientUrl: config.canton.jsonApiUrl,
@@ -580,6 +603,7 @@ export const createRpc = (config: WalletServiceConfig, deps: RpcDependencies = {
       .then((sdk) => sdk as Cip56TokenSdk)
       .catch((cause: unknown) => {
         tokenSdkPromise = undefined
+        tokenSdkToken = undefined
         throw new Error('CIP-56 wallet SDK failed to initialize', { cause })
       })
     return await tokenSdkPromise
@@ -689,9 +713,7 @@ export const createRpc = (config: WalletServiceConfig, deps: RpcDependencies = {
       throw new InvalidParams('requestMethod is required')
     }
     const method = p.requestMethod.toUpperCase()
-    if (config.canton.backendToken === undefined) {
-      throw new Error('CANTON_BACKEND_TOKEN is required for Canton JSON API calls')
-    }
+    const token = await getCantonToken()
     // `resource` comes from the dApp, and an absolute or protocol-relative one makes
     // `new URL` discard the base — which would send the Authorization header below, and
     // with it CANTON_BACKEND_TOKEN, to a host the caller chose. The token boundary is
@@ -708,7 +730,7 @@ export const createRpc = (config: WalletServiceConfig, deps: RpcDependencies = {
       method,
       headers: {
         'content-type': 'application/json',
-        authorization: `Bearer ${config.canton.backendToken}`,
+        authorization: `Bearer ${token}`,
       },
       signal: AbortSignal.timeout(15_000),
     }
@@ -765,13 +787,14 @@ export const createRpc = (config: WalletServiceConfig, deps: RpcDependencies = {
     instrumentId?: TokenInstrumentId,
   ): Promise<TokenHoldingSummary[]> => {
     const url = `${config.splice.scanApiUrl.replace(/\/$/, '')}/v0/holdings/summary`
+    // Scan's aggregate endpoint is public on some deployments, so an absent provider
+    // is not fatal here the way it is for a ledger call.
+    const token = await cantonTokenProvider?.getToken()
     const response = await fetchImpl(url, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        ...(config.canton.backendToken === undefined
-          ? {}
-          : { authorization: `Bearer ${config.canton.backendToken}` }),
+        ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
       },
       body: JSON.stringify({
         migration_id: 0,
@@ -1176,7 +1199,8 @@ export const createRpc = (config: WalletServiceConfig, deps: RpcDependencies = {
       jsonApiUrl: config.canton.jsonApiUrl,
       ledgerApiUrl: config.canton.ledgerApiUrl,
       adminApiUrl: config.canton.adminApiUrl,
-      hasBackendToken: config.canton.backendToken !== undefined,
+      tokenSource: config.canton.tokenSource,
+      hasBackendToken: cantonTokenProvider !== undefined,
     },
   })
 

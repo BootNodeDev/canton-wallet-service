@@ -1,4 +1,7 @@
-export type TokenSource = 'env' | 'none'
+import type { OAuthConfig } from './oauthToken.ts'
+import { FIVENORTH_PRESET, type NetworkPreset } from './presets/fivenorth.ts'
+
+export type TokenSource = 'static' | 'oauth' | 'none'
 
 export interface WalletServiceConfig {
   port: number
@@ -15,6 +18,7 @@ export interface WalletServiceConfig {
     ledgerApiUrl: string
     adminApiUrl: string
     backendToken?: string
+    oauth?: OAuthConfig
     tokenSource: TokenSource
   }
   splice: {
@@ -23,6 +27,32 @@ export interface WalletServiceConfig {
     registryApiUrl: string
   }
 }
+
+const TOKEN_REFRESH_SKEW_MS = 60_000
+
+// A preset only fills defaults; every value it carries stays overridable by its own variable.
+const PRESETS: Record<string, NetworkPreset> = { fivenorth: FIVENORTH_PRESET }
+
+// Splice LocalNet endpoints as published on the host, used only by the static token path.
+const LOCALNET = {
+  jsonApiUrl: 'http://localhost:3013',
+  ledgerApiUrl: 'grpc://localhost:3014',
+  adminApiUrl: 'grpc://localhost:3015',
+  validatorUrl: 'http://localhost:2000/api/validator',
+  scanApiUrl: 'http://scan.localhost:4000/api/scan',
+  registryApiUrl: 'http://localhost:2000/api/validator/v0/scan-proxy',
+} as const
+
+// Setting any one of these selects the OAuth path, so a half-filled config fails
+// naming what is missing instead of silently falling back to the static token.
+const OAUTH_VARS = [
+  'EXTERNAL_OAUTH_TOKEN_URL',
+  'EXTERNAL_OAUTH_CLIENT_ID',
+  'EXTERNAL_OAUTH_CLIENT_SECRET',
+  'EXTERNAL_OAUTH_SCOPE',
+] as const
+
+const PRESET_HINT = ' (or set EXTERNAL_PRESET to a preset that supplies it)'
 
 const optional = (name: string): string | undefined => {
   const value = process.env[name]
@@ -41,19 +71,101 @@ const optionalNumber = (name: string, fallback: number): number => {
   return parsed
 }
 
-// Resolves the explicit runtime bearer token without exposing the local signing recipe to services.
-const resolveToken = (): { token?: string; source: TokenSource } => {
-  const explicit = optional('CANTON_BACKEND_TOKEN')
-  if (explicit !== undefined) {
-    return { token: explicit, source: 'env' }
+const required = (name: string, fallback: string | undefined, hint = ''): string => {
+  const value = optional(name) ?? fallback
+  if (value === undefined || value === '') {
+    throw new Error(`${name} is required${hint}`)
   }
-  throw new Error(
-    'CANTON_BACKEND_TOKEN is required. Provide a bearer token the participant accepts.',
-  )
+  return value
+}
+
+// A hosted endpoint that is not a URL fails here rather than inside an SDK call hours later.
+const requiredUrl = (name: string, fallback: string | undefined, hint = ''): string => {
+  const value = required(name, fallback, hint)
+  try {
+    new URL(value)
+  } catch {
+    throw new Error(`${name} must be an absolute URL (got '${value}')`)
+  }
+  return value
+}
+
+const resolvePreset = (): NetworkPreset | undefined => {
+  const name = optional('EXTERNAL_PRESET')
+  if (name === undefined) {
+    return undefined
+  }
+  const preset = PRESETS[name]
+  if (preset === undefined) {
+    throw new Error(
+      `EXTERNAL_PRESET must be one of: ${Object.keys(PRESETS).join(', ')} (got '${name}')`,
+    )
+  }
+  return preset
+}
+
+type ResolvedNetwork = Pick<WalletServiceConfig, 'canton' | 'splice'>
+
+// LocalNet: an explicit bearer token, minted by whoever runs the participant, and
+// localhost defaults for every endpoint.
+const resolveStatic = (): ResolvedNetwork => {
+  const token = optional('CANTON_BACKEND_TOKEN')
+  if (token === undefined) {
+    throw new Error(
+      'CANTON_BACKEND_TOKEN is required. Provide a bearer token the participant accepts. Set the EXTERNAL_OAUTH_* variables instead to reach a hosted validator with OAuth client credentials.',
+    )
+  }
+  return {
+    canton: {
+      jsonApiUrl: optional('CANTON_JSON_API_URL') ?? LOCALNET.jsonApiUrl,
+      ledgerApiUrl: optional('CANTON_LEDGER_API_URL') ?? LOCALNET.ledgerApiUrl,
+      adminApiUrl: optional('CANTON_ADMIN_API_URL') ?? LOCALNET.adminApiUrl,
+      backendToken: token,
+      tokenSource: 'static',
+    },
+    splice: {
+      validatorUrl: optional('SPLICE_VALIDATOR_URL') ?? LOCALNET.validatorUrl,
+      scanApiUrl: optional('SPLICE_SCAN_API_URL') ?? LOCALNET.scanApiUrl,
+      registryApiUrl: optional('SPLICE_REGISTRY_API_URL') ?? LOCALNET.registryApiUrl,
+    },
+  }
+}
+
+// Hosted validator: client-credentials OAuth, and no localhost default is allowed to
+// stand in for an endpoint that has to be stated.
+const resolveOAuth = (preset: NetworkPreset | undefined): ResolvedNetwork => {
+  const oauth: OAuthConfig = {
+    tokenUrl: requiredUrl('EXTERNAL_OAUTH_TOKEN_URL', preset?.oauth.tokenUrl, PRESET_HINT),
+    clientId: required('EXTERNAL_OAUTH_CLIENT_ID', preset?.oauth.clientId, PRESET_HINT),
+    // Never presettable: a preset is checked-in source and a secret is not.
+    clientSecret: required('EXTERNAL_OAUTH_CLIENT_SECRET', undefined),
+    scope: required('EXTERNAL_OAUTH_SCOPE', preset?.oauth.scope, PRESET_HINT),
+    refreshSkewMs: TOKEN_REFRESH_SKEW_MS,
+  }
+  return {
+    canton: {
+      jsonApiUrl: requiredUrl('CANTON_JSON_API_URL', preset?.canton.jsonApiUrl, PRESET_HINT),
+      ledgerApiUrl: optional('CANTON_LEDGER_API_URL') ?? preset?.canton.ledgerApiUrl ?? '',
+      adminApiUrl: optional('CANTON_ADMIN_API_URL') ?? preset?.canton.adminApiUrl ?? '',
+      oauth,
+      tokenSource: 'oauth',
+    },
+    splice: {
+      validatorUrl: requiredUrl('SPLICE_VALIDATOR_URL', preset?.splice.validatorUrl, PRESET_HINT),
+      scanApiUrl: requiredUrl('SPLICE_SCAN_API_URL', preset?.splice.scanApiUrl, PRESET_HINT),
+      registryApiUrl: requiredUrl(
+        'SPLICE_REGISTRY_API_URL',
+        preset?.splice.registryApiUrl,
+        PRESET_HINT,
+      ),
+    },
+  }
 }
 
 export const loadConfig = (): WalletServiceConfig => {
-  const resolved = resolveToken()
+  const preset = resolvePreset()
+  const wantsOAuth = preset !== undefined || OAUTH_VARS.some((name) => optional(name) !== undefined)
+  const { canton, splice } = wantsOAuth ? resolveOAuth(preset) : resolveStatic()
   return {
     port: optionalNumber('WALLET_SERVICE_PORT', 3010),
     corsOrigins: (
@@ -64,25 +176,14 @@ export const loadConfig = (): WalletServiceConfig => {
       .split(',')
       .map((origin) => origin.trim())
       .filter((origin) => origin.length > 0),
-    network: optional('NETWORK') ?? 'canton:local',
+    network: optional('NETWORK') ?? (wantsOAuth ? 'canton:external' : 'canton:local'),
     provider: {
       id: optional('WALLET_PROVIDER_ID') ?? 'wallet-service',
       version: optional('WALLET_PROVIDER_VERSION') ?? '0.1.0',
       url: optional('WALLET_PROVIDER_URL') ?? 'http://localhost:3010',
       userUrl: optional('WALLET_PROVIDER_USER_URL') ?? 'http://localhost:3010',
     },
-    canton: {
-      jsonApiUrl: optional('CANTON_JSON_API_URL') ?? 'http://localhost:3013',
-      ledgerApiUrl: optional('CANTON_LEDGER_API_URL') ?? 'grpc://localhost:3014',
-      adminApiUrl: optional('CANTON_ADMIN_API_URL') ?? 'grpc://localhost:3015',
-      backendToken: resolved.token,
-      tokenSource: resolved.source,
-    },
-    splice: {
-      validatorUrl: optional('SPLICE_VALIDATOR_URL') ?? 'http://localhost:2000/api/validator',
-      scanApiUrl: optional('SPLICE_SCAN_API_URL') ?? 'http://scan.localhost:4000/api/scan',
-      registryApiUrl:
-        optional('SPLICE_REGISTRY_API_URL') ?? 'http://localhost:2000/api/validator/v0/scan-proxy',
-    },
+    canton,
+    splice,
   }
 }

@@ -1,0 +1,18 @@
+services:
+  wallet-service:
+    build: .
+    container_name: canton-wallet-service
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Fixed inside the container so the published port below cannot desync from
+      # the port the process listens on; WALLET_SERVICE_PORT in .env picks the host side.
+      WALLET_SERVICE_PORT: '3010'
+    ports:
+      - '${WALLET_SERVICE_PORT:-3010}:3010'
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3010/health >/dev/null || exit 1']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s

@@ -6,10 +6,31 @@ const CANTON_VARS = [
   'CANTON_BACKEND_TOKEN',
   'CANTON_AUTH_AUDIENCE',
   'CANTON_AUTH_SECRET',
+  'CANTON_JSON_API_URL',
   'SPLICE_VALIDATOR_URL',
   'SPLICE_SCAN_API_URL',
   'SPLICE_REGISTRY_API_URL',
+  'EXTERNAL_PRESET',
+  'EXTERNAL_OAUTH_TOKEN_URL',
+  'EXTERNAL_OAUTH_CLIENT_ID',
+  'EXTERNAL_OAUTH_CLIENT_SECRET',
+  'EXTERNAL_OAUTH_SCOPE',
 ] as const
+
+// The endpoints a hosted validator must state, since no localhost default may stand in.
+const hostedEndpoints = (): void => {
+  process.env.CANTON_JSON_API_URL = 'https://ledger.example'
+  process.env.SPLICE_VALIDATOR_URL = 'https://wallet.example/api/validator'
+  process.env.SPLICE_SCAN_API_URL = 'https://scan.example/api/scan'
+  process.env.SPLICE_REGISTRY_API_URL = 'https://wallet.example/api/validator/v0/scan-proxy'
+}
+
+const oauthCredentials = (): void => {
+  process.env.EXTERNAL_OAUTH_TOKEN_URL = 'https://auth.example/oauth/token'
+  process.env.EXTERNAL_OAUTH_CLIENT_ID = 'client-id'
+  process.env.EXTERNAL_OAUTH_CLIENT_SECRET = 'client-secret'
+  process.env.EXTERNAL_OAUTH_SCOPE = 'daml_ledger_api'
+}
 
 const snapshot = (): Record<string, string | undefined> =>
   Object.fromEntries(CANTON_VARS.map((name) => [name, process.env[name]]))
@@ -60,15 +81,16 @@ describe('config loader', () => {
     )
   })
 
-  it('tokenSource is "env" when CANTON_BACKEND_TOKEN is set', () => {
-    // Scenario: the explicit backend token is the only accepted real-mode
+  it('tokenSource is "static" when CANTON_BACKEND_TOKEN is set', () => {
+    // Scenario: the explicit backend token is the only accepted LocalNet
     // credential source, and it is passed through unchanged to SDK calls.
     process.env.CANTON_BACKEND_TOKEN = 'explicit.jwt.value'
     process.env.CANTON_AUTH_AUDIENCE = 'https://canton.network.global'
     process.env.CANTON_AUTH_SECRET = 'unsafe'
     const config = loadConfig()
-    assert.equal(config.canton.tokenSource, 'env')
+    assert.equal(config.canton.tokenSource, 'static')
     assert.equal(config.canton.backendToken, 'explicit.jwt.value')
+    assert.equal(config.canton.oauth, undefined)
   })
 
   it('defaults Splice service URLs for token and Amulet SDK helpers', () => {
@@ -102,5 +124,75 @@ describe('config loader', () => {
       scanApiUrl: 'http://scan.example/api/scan',
       registryApiUrl: 'http://registry.example/api/registry',
     })
+  })
+
+  it('switches to the OAuth path when the EXTERNAL_OAUTH_* variables are set', () => {
+    // Scenario: a hosted validator issues short-lived tokens, so wallet-service
+    // takes client credentials instead of a pasted JWT. CANTON_BACKEND_TOKEN is
+    // not needed and not read on this path.
+    hostedEndpoints()
+    oauthCredentials()
+
+    const config = loadConfig()
+
+    assert.equal(config.canton.tokenSource, 'oauth')
+    assert.equal(config.canton.backendToken, undefined)
+    assert.deepEqual(config.canton.oauth, {
+      tokenUrl: 'https://auth.example/oauth/token',
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+      scope: 'daml_ledger_api',
+      refreshSkewMs: 60_000,
+    })
+    assert.equal(config.network, 'canton:external')
+  })
+
+  it('fails naming the missing variable when OAuth config is half-filled', () => {
+    // Scenario: one EXTERNAL_OAUTH_* variable selects the OAuth path, so a typo in
+    // another must stop startup by name rather than fall back to the static token.
+    hostedEndpoints()
+    oauthCredentials()
+    delete process.env.EXTERNAL_OAUTH_CLIENT_SECRET
+
+    assert.throws(() => loadConfig(), /EXTERNAL_OAUTH_CLIENT_SECRET is required/)
+  })
+
+  it('rejects a malformed OAuth token URL by name', () => {
+    hostedEndpoints()
+    oauthCredentials()
+    process.env.EXTERNAL_OAUTH_TOKEN_URL = 'auth.example/oauth/token'
+
+    assert.throws(() => loadConfig(), /EXTERNAL_OAUTH_TOKEN_URL must be an absolute URL/)
+  })
+
+  it('refuses to let a localhost default stand in for a hosted endpoint', () => {
+    // Scenario: silently defaulting a hosted deployment's Splice URLs to LocalNet
+    // produces a service that starts and then fails every call.
+    oauthCredentials()
+
+    assert.throws(() => loadConfig(), /CANTON_JSON_API_URL is required/)
+  })
+
+  it('fills hosted endpoints and OAuth defaults from a named preset', () => {
+    // Scenario: EXTERNAL_PRESET selects a known validator so only the secret has
+    // to be supplied. The secret itself is never presettable.
+    process.env.EXTERNAL_PRESET = 'fivenorth'
+    process.env.EXTERNAL_OAUTH_CLIENT_SECRET = 'client-secret'
+    process.env.SPLICE_SCAN_API_URL = 'https://scan.example/api/scan'
+
+    const config = loadConfig()
+
+    assert.equal(config.canton.tokenSource, 'oauth')
+    assert.equal(config.canton.oauth?.clientId, 'validator-devnet-m2m')
+    assert.equal(
+      config.canton.jsonApiUrl,
+      'https://ledger-api.validator.devnet.sandbox.fivenorth.io',
+    )
+  })
+
+  it('rejects an unknown preset by name', () => {
+    process.env.EXTERNAL_PRESET = 'nowhere'
+
+    assert.throws(() => loadConfig(), /EXTERNAL_PRESET must be one of: fivenorth/)
   })
 })
