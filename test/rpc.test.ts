@@ -13,26 +13,19 @@ const baseConfig = () => ({
     url: 'http://localhost:3010',
     userUrl: 'http://localhost:3010',
   },
+  // Credentials are a union, so there is no credential-less config to build: every
+  // config loadConfig can produce carries either a static token or OAuth.
   canton: {
     jsonApiUrl: 'http://localhost:3013',
     ledgerApiUrl: 'grpc://localhost:3014',
     adminApiUrl: 'grpc://localhost:3015',
-    backendToken: undefined as string | undefined,
-    tokenSource: 'none' as const,
+    backendToken: 'backend.jwt',
+    tokenSource: 'static' as const,
   },
   splice: {
     validatorUrl: 'http://localhost:2000/api/validator',
     scanApiUrl: 'http://scan.localhost:4000/api/scan',
     registryApiUrl: 'http://localhost:2000/api/validator/v0/scan-proxy',
-  },
-})
-
-const withToken = () => ({
-  ...baseConfig(),
-  canton: {
-    ...baseConfig().canton,
-    backendToken: 'backend.jwt',
-    tokenSource: 'static' as const,
   },
 })
 
@@ -184,7 +177,7 @@ describe('ledgerApi pass-through', () => {
       method: 'ledgerApi',
       params: { requestMethod: 'get', resource: '/v2/version' },
     })) as JsonRpcResponse
-    // Without a backend token + real SDK this fails at our token check, not at whitelist validation.
+    // Without a reachable participant this fails at the request, not at validation.
     // Assert: error is NOT -32602 (validation) and NOT a whitelist rejection.
     assert.ok('error' in res)
     assert.notEqual(res.error.code, -32602)
@@ -204,7 +197,7 @@ describe('ledgerApi pass-through', () => {
 
     for (const resource of offOrigin) {
       let called = false
-      const rpc = createRpc(withToken(), {
+      const rpc = createRpc(baseConfig(), {
         fetch: async () => {
           called = true
           return new Response('{}', { headers: { 'content-type': 'application/json' } })
@@ -227,7 +220,7 @@ describe('ledgerApi pass-through', () => {
   it('still allows a relative resource and an absolute one on the configured origin', async () => {
     for (const resource of ['/v2/version', 'http://localhost:3013/v2/version']) {
       const seen: { url?: string; authorization?: string } = {}
-      const rpc = createRpc(withToken(), {
+      const rpc = createRpc(baseConfig(), {
         fetch: async (input, init) => {
           seen.url = String(input)
           seen.authorization = new Headers(init?.headers).get('authorization') ?? undefined
@@ -269,7 +262,7 @@ describe('CIP-56 token helpers', () => {
       },
     ]
     const seen: { partyId?: string; tokenConfig?: unknown; amuletConfig?: unknown } = {}
-    const rpc = createRpc(withToken(), {
+    const rpc = createRpc(baseConfig(), {
       sdkFactory: async (options) => {
         seen.tokenConfig = (options as { token?: unknown }).token
         seen.amuletConfig = (options as { amulet?: unknown }).amulet
@@ -315,7 +308,7 @@ describe('CIP-56 token helpers', () => {
     // wallet-service returns the SDK command and disclosed contracts only.
     const disclosedContracts = [{ contractId: 'registry-context-cid', createdEventBlob: 'blob' }]
     const seen: { transferInstructionCid?: string; registryUrl?: string } = {}
-    const rpc = createRpc(withToken(), {
+    const rpc = createRpc(baseConfig(), {
       sdkFactory: async () => ({
         token: {
           transfer: {
@@ -352,7 +345,7 @@ describe('CIP-56 token helpers', () => {
     const disclosedContracts = [{ contractId: 'transfer-context-cid', createdEventBlob: 'blob' }]
     const expirationDate = '2026-06-10T15:00:00.000Z'
     const seen: { params?: Record<string, unknown> } = {}
-    const rpc = createRpc(withToken(), {
+    const rpc = createRpc(baseConfig(), {
       sdkFactory: async () => ({
         token: {
           transfer: {
@@ -411,7 +404,7 @@ describe('CIP-56 token helpers', () => {
       },
     }
     const seen: { receiver?: string } = {}
-    const rpc = createRpc(withToken(), {
+    const rpc = createRpc(baseConfig(), {
       now: () => new Date('2026-06-11T00:00:00.000Z'),
       sdkFactory: async () => ({
         amulet: {
@@ -447,7 +440,7 @@ describe('CIP-56 token helpers', () => {
     // Scenario: the Tokens tab polls this method every few seconds. Missing
     // preapproval must resolve immediately instead of using the SDK wait helper.
     const seen: { receiver?: string } = {}
-    const rpc = createRpc(withToken(), {
+    const rpc = createRpc(baseConfig(), {
       sdkFactory: async () => ({
         amulet: {
           preapproval: {
@@ -475,7 +468,7 @@ describe('CIP-56 token helpers', () => {
   it('prepares an Amulet transfer preapproval proposal create command for the receiver party', async () => {
     // Scenario: the external receiver can only sign the proposal creation. The
     // validator provider accepts that proposal in a separate local-party submit.
-    const rpc = createRpc(withToken(), {
+    const rpc = createRpc(baseConfig(), {
       sdkFactory: async () => ({
         amulet: {
           preapproval: {
@@ -528,7 +521,7 @@ describe('CIP-56 token helpers', () => {
     // 100 AMT for the selected external party while preserving local signing.
     const disclosedContracts = [{ contractId: 'tap-context-cid', createdEventBlob: 'blob' }]
     const seen: { receiver?: string; amount?: string } = {}
-    const rpc = createRpc(withToken(), {
+    const rpc = createRpc(baseConfig(), {
       sdkFactory: async () => ({
         amulet: {
           tap: async (receiver: string, amount: string) => {
@@ -560,7 +553,7 @@ describe('CIP-56 token helpers', () => {
     // Scenario: after the wallet creates the receiver-signed proposal, the local
     // validator provider must accept it with a normal participant submit.
     const seen: { acs?: unknown; submit?: unknown; inputOwner?: string } = {}
-    const rpc = createRpc(withToken(), {
+    const rpc = createRpc(baseConfig(), {
       now: () => new Date('2026-06-10T00:00:00.000Z'),
       sdkFactory: async () => ({
         amulet: {
@@ -684,7 +677,7 @@ describe('CIP-56 token helpers', () => {
     // immediately after interactive submission execute returns, so acceptance retries briefly.
     let readCount = 0
     const slept: number[] = []
-    const rpc = createRpc(withToken(), {
+    const rpc = createRpc(baseConfig(), {
       now: () => new Date('2026-06-10T00:00:00.000Z'),
       sleep: async (ms) => {
         slept.push(ms)
@@ -762,7 +755,7 @@ describe('CIP-56 token helpers', () => {
     // return any disclosed contracts required by interactive submission.
     const disclosedContracts = [{ contractId: 'preapproval-context-cid', createdEventBlob: 'blob' }]
     const seen: { parties?: unknown } = {}
-    const rpc = createRpc(withToken(), {
+    const rpc = createRpc(baseConfig(), {
       sdkFactory: async () => ({
         amulet: {
           preapproval: {
@@ -800,7 +793,7 @@ describe('CIP-56 token helpers', () => {
     // Scenario: Scan and the ledger can disagree briefly after cancel archives
     // a TransferPreapproval. A repeated disable must finish as an idempotent no-op.
     let cancelCalled = false
-    const rpc = createRpc(withToken(), {
+    const rpc = createRpc(baseConfig(), {
       sdkFactory: async () => ({
         amulet: {
           preapproval: {
@@ -843,7 +836,7 @@ describe('CIP-56 token helpers', () => {
       },
     ]
     const seen: { params?: unknown; tokenConfig?: unknown } = {}
-    const rpc = createRpc(withToken(), {
+    const rpc = createRpc(baseConfig(), {
       sdkFactory: async (options) => {
         seen.tokenConfig = (options as { token?: unknown }).token
         return {
@@ -885,7 +878,7 @@ describe('CIP-56 token helpers', () => {
     // Scenario: CC/Amulet balances should use Scan's aggregate endpoint so the
     // wallet can show a balance without walking every Holding UTXO.
     const calls: { url: string; body?: unknown }[] = []
-    const rpc = createRpc(withToken(), {
+    const rpc = createRpc(baseConfig(), {
       now: () => new Date('2026-06-10T12:00:00.000Z'),
       sdkFactory: async () => {
         throw new Error('SDK should not list UTXOs for Amulet summary')
@@ -977,7 +970,7 @@ describe('CIP-56 token helpers', () => {
       },
     ]
     const seen: { params?: unknown } = {}
-    const rpc = createRpc(withToken(), {
+    const rpc = createRpc(baseConfig(), {
       fetch: async () => new Response('scan unavailable', { status: 503 }),
       sdkFactory: async () => ({
         token: {
@@ -1024,7 +1017,7 @@ describe('CIP-56 token helpers', () => {
     // Scenario: Scan aggregates only CC/Amulet. Other CIP-56 tokens must use the
     // generic UTXO list and filter by the requested instrument.
     let scanCalled = false
-    const rpc = createRpc(withToken(), {
+    const rpc = createRpc(baseConfig(), {
       fetch: async () => {
         scanCalled = true
         return new Response('{}')
@@ -1090,7 +1083,7 @@ describe('CIP-56 token helpers', () => {
   it('rejects CIP-56 helper calls without required params', async () => {
     // Scenario: malformed wallet calls should fail as JSON-RPC invalid
     // params before the SDK is initialized or any Splice service is contacted.
-    const rpc = createRpc(withToken(), {
+    const rpc = createRpc(baseConfig(), {
       sdkFactory: async () => {
         throw new Error('SDK should not be initialized')
       },
@@ -1175,7 +1168,7 @@ describe('canton credentials', () => {
 
   it('sends the static token as the ledgerApi bearer', async () => {
     const seen: { authorization?: string } = {}
-    const rpc = createRpc(withToken(), {
+    const rpc = createRpc(baseConfig(), {
       fetch: async (_url, init) => {
         seen.authorization = new Headers(init?.headers).get('authorization') ?? undefined
         return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
@@ -1236,17 +1229,35 @@ describe('canton credentials', () => {
     assert.deepEqual(built, ['first.jwt', 'second.jwt'])
   })
 
-  it('refuses Canton calls when no credentials are configured', async () => {
-    // Scenario: a config with neither a static token nor OAuth must say so by
-    // variable name instead of sending an empty bearer at the participant.
-    const rpc = createRpc(baseConfig())
+  it('rebuilds the CIP-56 SDK on rotation too, not just the ledger SDK', async () => {
+    // Scenario: both SDKs capture their bearer, so a rotation that refreshed only one
+    // would leave Amulet and token-standard calls presenting an expired credential.
+    const tokens = ['first.jwt', 'first.jwt', 'second.jwt']
+    const built: string[] = []
+    const listHoldings = {
+      jsonrpc: '2.0' as const,
+      id: 1,
+      method: 'cip56.listHoldings',
+      params: { partyId: 'alice::fp' },
+    }
+    const rpc = createRpc(oauthConfig(), {
+      tokenProvider: { getToken: async () => tokens.shift() ?? 'second.jwt' },
+      sdkFactory: async (options) => {
+        built.push((options as { auth: { token: string } }).auth.token)
+        return { token: { utxos: { list: async () => [] } } }
+      },
+    })
 
-    await assert.rejects(rpc.getSdk(), /Set CANTON_BACKEND_TOKEN, or the EXTERNAL_OAUTH_\*/)
+    await rpc.handle(listHoldings)
+    await rpc.handle(listHoldings)
+    assert.deepEqual(built, ['first.jwt'])
+
+    await rpc.handle(listHoldings)
+    assert.deepEqual(built, ['first.jwt', 'second.jwt'])
   })
 
   it('reports the token source in serviceInfo', () => {
-    const canton = createRpc(withToken()).serviceInfo().canton as Record<string, unknown>
+    const canton = createRpc(baseConfig()).serviceInfo().canton as Record<string, unknown>
     assert.equal(canton.tokenSource, 'static')
-    assert.equal(canton.hasBackendToken, true)
   })
 })

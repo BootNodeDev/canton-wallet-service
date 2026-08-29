@@ -6,23 +6,12 @@ export const createStaticTokenProvider = (token: string): CantonTokenProvider =>
   getToken: async () => token,
 })
 
-// Single seam every consumer uses; the token source already chose the strategy in config.
+// The single seam every consumer uses. Total, because config's credentials are a union:
+// there is no "configured but credential-less" state for a caller to re-check.
 export const createTokenProvider = (
   config: WalletServiceConfig,
   deps: { fetch?: typeof fetch } = {},
-): CantonTokenProvider | undefined => {
-  const { tokenSource } = config.canton
-  if (tokenSource === 'static') {
-    if (config.canton.backendToken === undefined) {
-      throw new Error('static token source requires CANTON_BACKEND_TOKEN')
-    }
-    return createStaticTokenProvider(config.canton.backendToken)
-  }
-  if (tokenSource === 'oauth') {
-    if (config.canton.oauth === undefined) {
-      throw new Error('oauth token source requires EXTERNAL_OAUTH_* configuration')
-    }
-    return createOAuthTokenProvider(config.canton.oauth, { fetch: deps.fetch ?? fetch })
-  }
-  return undefined
-}
+): CantonTokenProvider =>
+  config.canton.tokenSource === 'static'
+    ? createStaticTokenProvider(config.canton.backendToken)
+    : createOAuthTokenProvider(config.canton.oauth, deps)

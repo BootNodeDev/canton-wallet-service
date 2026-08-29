@@ -2,11 +2,15 @@ import { strict as assert } from 'node:assert'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 import { loadConfig } from '../src/config.ts'
 
+// Every variable loadConfig reads: an ambient one would otherwise decide an assertion.
 const CANTON_VARS = [
+  'NETWORK',
   'CANTON_BACKEND_TOKEN',
   'CANTON_AUTH_AUDIENCE',
   'CANTON_AUTH_SECRET',
   'CANTON_JSON_API_URL',
+  'CANTON_LEDGER_API_URL',
+  'CANTON_ADMIN_API_URL',
   'SPLICE_VALIDATOR_URL',
   'SPLICE_SCAN_API_URL',
   'SPLICE_REGISTRY_API_URL',
@@ -15,6 +19,7 @@ const CANTON_VARS = [
   'EXTERNAL_OAUTH_CLIENT_ID',
   'EXTERNAL_OAUTH_CLIENT_SECRET',
   'EXTERNAL_OAUTH_SCOPE',
+  'EXTERNAL_OAUTH_AUDIENCE',
 ] as const
 
 // The endpoints a hosted validator must state, since no localhost default may stand in.
@@ -194,5 +199,51 @@ describe('config loader', () => {
     process.env.EXTERNAL_PRESET = 'nowhere'
 
     assert.throws(() => loadConfig(), /EXTERNAL_PRESET must be one of: fivenorth/)
+  })
+
+  it('rejects a preset name inherited from Object.prototype', () => {
+    // Scenario: a plain PRESETS[name] lookup resolves 'toString' to the inherited
+    // function, which is not undefined, so the allowlist passes and the failure
+    // surfaces later as a TypeError naming nothing.
+    process.env.EXTERNAL_PRESET = 'toString'
+    process.env.EXTERNAL_OAUTH_CLIENT_SECRET = 'client-secret'
+
+    assert.throws(() => loadConfig(), /EXTERNAL_PRESET must be one of: fivenorth/)
+  })
+
+  it('refuses a loopback endpoint on the OAuth path', () => {
+    // Scenario: `cp .env.example .env` leaves the LocalNet URLs in place, and an
+    // explicit value beats a preset. Without this the service boots green with
+    // hosted credentials and refuses every Canton call.
+    hostedEndpoints()
+    oauthCredentials()
+    process.env.CANTON_JSON_API_URL = 'http://localhost:2975'
+
+    assert.throws(() => loadConfig(), /CANTON_JSON_API_URL must name the hosted validator/)
+  })
+
+  it('does not blame the preset for a variable the preset cannot supply', () => {
+    // Scenario: the fivenorth preset has no scan host, and telling an operator to
+    // set EXTERNAL_PRESET when it is already set sends them in a circle.
+    process.env.EXTERNAL_PRESET = 'fivenorth'
+    process.env.EXTERNAL_OAUTH_CLIENT_SECRET = 'client-secret'
+
+    assert.throws(
+      () => loadConfig(),
+      (error: Error) => {
+        assert.match(error.message, /SPLICE_SCAN_API_URL is required/)
+        assert.doesNotMatch(error.message, /set EXTERNAL_PRESET/)
+        return true
+      },
+    )
+  })
+
+  it('sends an OAuth audience only when one is configured', () => {
+    hostedEndpoints()
+    oauthCredentials()
+    assert.equal(loadConfig().canton.oauth?.audience, undefined)
+
+    process.env.EXTERNAL_OAUTH_AUDIENCE = 'https://canton.network.global'
+    assert.equal(loadConfig().canton.oauth?.audience, 'https://canton.network.global')
   })
 })

@@ -541,50 +541,44 @@ export const createRpc = (config: WalletServiceConfig, deps: RpcDependencies = {
       new Promise<void>((resolve) => {
         setTimeout(resolve, ms)
       }))
-  let sdkPromise: Promise<WalletSdk> | undefined
-  let tokenSdkPromise: Promise<Cip56TokenSdk> | undefined
-  let sdkToken: string | undefined
-  let tokenSdkToken: string | undefined
-
-  // Centralizes bearer lookup so every request can refresh before Canton calls.
-  const getCantonToken = async (): Promise<string> => {
-    if (cantonTokenProvider === undefined) {
-      throw new Error(
-        'No Canton credentials configured. Set CANTON_BACKEND_TOKEN, or the EXTERNAL_OAUTH_* variables for a hosted validator.',
-      )
+  // An SDK is built with `auth: { method: 'static' }`, so it holds the bearer it was
+  // given and a refreshed token needs a new instance. Stated once here rather than in
+  // each SDK's getter, because the rotation rule is subtle: the failure path must clear
+  // the slot only when it still holds the attempt that failed, or a rotation racing a
+  // slow rejection throws away the working instance it just built.
+  const sdkPerToken = <T>(label: string, build: (token: string) => Promise<unknown>) => {
+    let promise: Promise<T> | undefined
+    let builtWith: string | undefined
+    return async (): Promise<T> => {
+      const token = await cantonTokenProvider.getToken()
+      if (builtWith !== token) {
+        promise = undefined
+        builtWith = token
+      }
+      promise ??= build(token)
+        .then((sdk) => sdk as T)
+        .catch((cause: unknown) => {
+          if (builtWith === token) {
+            promise = undefined
+            builtWith = undefined
+          }
+          throw new Error(`${label} failed to initialize`, { cause })
+        })
+      return await promise
     }
-    return await cantonTokenProvider.getToken()
   }
 
-  const getSdk = async (): Promise<WalletSdk> => {
-    const token = await getCantonToken()
-    // The SDK captures the bearer at construction, so a refreshed token needs a new one.
-    if (sdkToken !== token) {
-      sdkPromise = undefined
-      sdkToken = token
-    }
-    sdkPromise ??= sdkFactory({
+  const getSdk = sdkPerToken<WalletSdk>('Canton wallet SDK', (token) =>
+    sdkFactory({
       auth: { method: 'static', token },
       ledgerClientUrl: config.canton.jsonApiUrl,
       logAdapter: 'console',
-    })
-      .then((sdk) => sdk as WalletSdk)
-      .catch((cause: unknown) => {
-        sdkPromise = undefined
-        sdkToken = undefined
-        throw new Error('Canton wallet SDK failed to initialize', { cause })
-      })
-    return await sdkPromise
-  }
+    }),
+  )
 
-  const getTokenSdk = async (): Promise<Cip56TokenSdk> => {
-    const token = await getCantonToken()
-    if (tokenSdkToken !== token) {
-      tokenSdkPromise = undefined
-      tokenSdkToken = token
-    }
+  const getTokenSdk = sdkPerToken<Cip56TokenSdk>('CIP-56 wallet SDK', (token) => {
     const auth = { method: 'static', token }
-    tokenSdkPromise ??= sdkFactory({
+    return sdkFactory({
       auth,
       ledgerClientUrl: config.canton.jsonApiUrl,
       logAdapter: 'console',
@@ -600,14 +594,7 @@ export const createRpc = (config: WalletServiceConfig, deps: RpcDependencies = {
         auth,
       },
     })
-      .then((sdk) => sdk as Cip56TokenSdk)
-      .catch((cause: unknown) => {
-        tokenSdkPromise = undefined
-        tokenSdkToken = undefined
-        throw new Error('CIP-56 wallet SDK failed to initialize', { cause })
-      })
-    return await tokenSdkPromise
-  }
+  })
 
   const ledgerJsonApiVersion = async (): Promise<{ connected: boolean; reason?: string }> => {
     try {
@@ -713,16 +700,18 @@ export const createRpc = (config: WalletServiceConfig, deps: RpcDependencies = {
       throw new InvalidParams('requestMethod is required')
     }
     const method = p.requestMethod.toUpperCase()
-    const token = await getCantonToken()
     // `resource` comes from the dApp, and an absolute or protocol-relative one makes
     // `new URL` discard the base — which would send the Authorization header below, and
-    // with it CANTON_BACKEND_TOKEN, to a host the caller chose. The token boundary is
+    // with it the Canton bearer, to a host the caller chose. The token boundary is
     // this service's, so a resource resolving off the configured origin is refused.
     const base = new URL(config.canton.jsonApiUrl)
     const url = new URL(p.resource, base)
     if (url.origin !== base.origin) {
       throw new InvalidParams('resource must resolve to the configured Canton JSON API origin')
     }
+    // Only after the guard: validation is pure, and fetching first would let a dApp
+    // force a token request with a `resource` that was always going to be refused.
+    const token = await cantonTokenProvider.getToken()
     for (const [key, value] of Object.entries(p.query ?? {})) {
       url.searchParams.set(key, String(value))
     }
@@ -787,14 +776,12 @@ export const createRpc = (config: WalletServiceConfig, deps: RpcDependencies = {
     instrumentId?: TokenInstrumentId,
   ): Promise<TokenHoldingSummary[]> => {
     const url = `${config.splice.scanApiUrl.replace(/\/$/, '')}/v0/holdings/summary`
-    // Scan's aggregate endpoint is public on some deployments, so an absent provider
-    // is not fatal here the way it is for a ledger call.
-    const token = await cantonTokenProvider?.getToken()
+    const token = await cantonTokenProvider.getToken()
     const response = await fetchImpl(url, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
+        authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({
         migration_id: 0,
@@ -1200,7 +1187,6 @@ export const createRpc = (config: WalletServiceConfig, deps: RpcDependencies = {
       ledgerApiUrl: config.canton.ledgerApiUrl,
       adminApiUrl: config.canton.adminApiUrl,
       tokenSource: config.canton.tokenSource,
-      hasBackendToken: cantonTokenProvider !== undefined,
     },
   })
 

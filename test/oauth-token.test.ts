@@ -55,14 +55,99 @@ describe('createOAuthTokenProvider', () => {
     assert.equal(requests.length, 2)
   })
 
-  it('reports the HTTP failure body when the token request is rejected', async () => {
-    // Scenario: wrong client credentials must surface as an auth failure, not as
-    // an opaque Canton error on the first ledger call.
+  it('reports an HTTP failure without putting the provider body in the error', async () => {
+    // Scenario: wrong client credentials must surface as an auth failure, not as an
+    // opaque Canton error. The provider's body stays in the log, because this error
+    // travels out to the dApp as a -32000 and the credential boundary is ours.
     const provider = createOAuthTokenProvider(config, {
-      fetch: async () => new Response('{"error":"invalid_client"}', { status: 401 }),
+      fetch: async () =>
+        new Response('{"error":"invalid_client","hint":"secret rotated"}', { status: 401 }),
     })
 
-    await assert.rejects(provider.getToken(), /OAuth token request failed with HTTP 401/)
+    await assert.rejects(provider.getToken(), (error: Error) => {
+      assert.match(error.message, /OAuth token request failed with HTTP 401/)
+      assert.doesNotMatch(error.message, /invalid_client|secret rotated/)
+      return true
+    })
+  })
+
+  it('names a non-JSON response instead of throwing a raw SyntaxError', async () => {
+    // Scenario: a token URL pointed at a discovery document or an HTML error page.
+    const provider = createOAuthTokenProvider(config, {
+      fetch: async () => new Response('<!DOCTYPE html><html></html>', { status: 200 }),
+    })
+
+    await assert.rejects(provider.getToken(), /OAuth token response was not JSON/)
+  })
+
+  it('never skews refresh past half the token lifetime', async () => {
+    // Scenario: a 60s token against a 60s skew would refresh on every single call,
+    // and each new JWT tears down and rebuilds every SDK that captured the old one.
+    let calls = 0
+    let currentTime = 1_000_000
+    const provider = createOAuthTokenProvider(config, {
+      now: () => currentTime,
+      fetch: async () => {
+        calls += 1
+        return new Response(JSON.stringify({ access_token: `t-${calls}`, expires_in: 60 }), {
+          status: 200,
+        })
+      },
+    })
+
+    assert.equal(await provider.getToken(), 't-1')
+    // Half of 60s is the furthest the skew may pull the refresh forward.
+    currentTime += 29_000
+    assert.equal(await provider.getToken(), 't-1')
+    assert.equal(calls, 1)
+
+    currentTime += 2_000
+    assert.equal(await provider.getToken(), 't-2')
+    assert.equal(calls, 2)
+  })
+
+  it('makes one token request for a burst of concurrent callers', async () => {
+    // Scenario: getSdk, getTokenSdk, ledgerApi and the Scan summary all ask at once
+    // when the cache expires; a rate-limited provider 429s the extras.
+    let calls = 0
+    const provider = createOAuthTokenProvider(config, {
+      fetch: async () => {
+        calls += 1
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        return new Response(JSON.stringify({ access_token: 'shared', expires_in: 3600 }), {
+          status: 200,
+        })
+      },
+    })
+
+    const tokens = await Promise.all(Array.from({ length: 8 }, () => provider.getToken()))
+
+    assert.deepEqual(
+      tokens,
+      Array.from({ length: 8 }, () => 'shared'),
+    )
+    assert.equal(calls, 1)
+  })
+
+  it('sends an audience only when the config carries one', async () => {
+    const bodies: string[] = []
+    const capture = {
+      fetch: async (_url: string | URL | Request, init?: RequestInit) => {
+        bodies.push(String(init?.body))
+        return new Response(JSON.stringify({ access_token: 'a', expires_in: 3600 }), {
+          status: 200,
+        })
+      },
+    }
+
+    await createOAuthTokenProvider(config, capture).getToken()
+    assert.doesNotMatch(bodies[0] ?? '', /audience/)
+
+    await createOAuthTokenProvider(
+      { ...config, audience: 'https://aud.example' },
+      capture,
+    ).getToken()
+    assert.match(bodies[1] ?? '', /audience=https%3A%2F%2Faud.example/)
   })
 
   it('rejects a response without an access_token', async () => {

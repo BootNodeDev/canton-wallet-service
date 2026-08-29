@@ -1,26 +1,24 @@
 import { strict as assert } from 'node:assert'
 import { describe, it } from 'node:test'
+import type { CantonCredentials } from '../src/config.ts'
 import { createStaticTokenProvider, createTokenProvider } from '../src/tokenProvider.ts'
 
-const cfg = (canton: Record<string, unknown>) =>
+// Typed as the real union, so a credential shape config can no longer produce also
+// stops compiling here rather than living on as a test for an impossible state.
+const cfg = (canton: CantonCredentials) =>
   ({
     port: 3010,
     corsOrigins: ['http://localhost:3011'],
     network: 'canton:test',
     provider: { id: 'wallet-service', version: '0.1.0' },
-    canton,
+    canton: { jsonApiUrl: '', ledgerApiUrl: '', adminApiUrl: '', ...canton },
     splice: { validatorUrl: '', scanApiUrl: '', registryApiUrl: '' },
   }) as never
 
 describe('createTokenProvider', () => {
   it('returns a static provider for the static token source', async () => {
     const provider = createTokenProvider(cfg({ tokenSource: 'static', backendToken: 'local-jwt' }))
-    assert.notEqual(provider, undefined)
-    assert.equal(await provider?.getToken(), 'local-jwt')
-  })
-
-  it('returns undefined for the none token source', () => {
-    assert.equal(createTokenProvider(cfg({ tokenSource: 'none' })), undefined)
+    assert.equal(await provider.getToken(), 'local-jwt')
   })
 
   it('returns an OAuth provider for the oauth token source', async () => {
@@ -42,21 +40,7 @@ describe('createTokenProvider', () => {
           }),
       },
     )
-    assert.equal(await provider?.getToken(), 'oauth-jwt')
-  })
-
-  it('refuses a static source with no token rather than issuing an empty bearer', () => {
-    assert.throws(
-      () => createTokenProvider(cfg({ tokenSource: 'static' })),
-      /requires CANTON_BACKEND_TOKEN/,
-    )
-  })
-
-  it('refuses an oauth source with no OAuth config', () => {
-    assert.throws(
-      () => createTokenProvider(cfg({ tokenSource: 'oauth' })),
-      /requires EXTERNAL_OAUTH_\* configuration/,
-    )
+    assert.equal(await provider.getToken(), 'oauth-jwt')
   })
 
   it('createStaticTokenProvider always returns the given token', async () => {

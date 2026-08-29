@@ -72,15 +72,20 @@ it expires. `CANTON_BACKEND_TOKEN` is then neither read nor needed.
 | `EXTERNAL_OAUTH_CLIENT_ID`     | Machine-to-machine client id.                  |
 | `EXTERNAL_OAUTH_CLIENT_SECRET` | Its secret. Never comes from a preset.         |
 | `EXTERNAL_OAUTH_SCOPE`         | Usually `daml_ledger_api`.                     |
-| `EXTERNAL_PRESET`              | Optional. Fills the rest for a known validator.|
+| `EXTERNAL_OAUTH_AUDIENCE`      | Optional. Sent only when set, for providers that gate on `aud`. |
+| `EXTERNAL_PRESET`              | Optional. Supplies defaults for a known validator. |
 
 On the OAuth path no localhost default is allowed to stand in for an endpoint:
 `CANTON_JSON_API_URL` and the three `SPLICE_*` URLs must name the hosted
-validator, or come from `EXTERNAL_PRESET`. Anything missing or malformed fails
-at startup naming the variable rather than at the first Canton call.
+validator, whether from the environment or from `EXTERNAL_PRESET`. Missing,
+malformed, or loopback values fail at startup naming the variable rather than at
+the first Canton call — a service that boots green and refuses every Canton call
+is the worse outcome.
 
 A preset (`src/presets/`) is checked-in source, so it carries endpoints and
-public OAuth fields only.
+public OAuth fields only, never the secret. It fills what it knows and no more:
+`fivenorth` has no published scan host, so `SPLICE_SCAN_API_URL` still has to be
+supplied alongside it.
 
 ## API Boundary
 
