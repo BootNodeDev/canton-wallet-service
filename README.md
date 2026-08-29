@@ -15,7 +15,7 @@ blocks a dependency's build scripts by default, so it has to be allowed through
 before the install produces anything runnable:
 
 ```bash
-pnpm add -D "git+ssh://git@github.com/BootNodeDev/canton-wallet-service.git#v0.1.2"
+pnpm add -D "git+ssh://git@github.com/BootNodeDev/canton-wallet-service.git#v0.1.3"
 pnpm approve-builds          # allow this package's `prepare`, then re-install
 pnpm exec canton-wallet-service
 ```
