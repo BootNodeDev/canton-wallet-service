@@ -1,8 +1,6 @@
 import type { OAuthConfig } from './oauthToken.ts'
 import { FIVENORTH_PRESET, type NetworkPreset } from './presets/fivenorth.ts'
 
-export type TokenSource = 'static' | 'oauth'
-
 export interface CantonEndpoints {
   jsonApiUrl: string
   ledgerApiUrl: string

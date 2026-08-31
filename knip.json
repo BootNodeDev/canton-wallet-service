@@ -1,0 +1,6 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "ignoreExportsUsedInFile": true,
+  "entry": ["test/**/*.test.ts", ".lintstagedrc.format.mjs"],
+  "project": ["src/**/*.ts", "test/**/*.ts", ".*.mjs"]
+}
