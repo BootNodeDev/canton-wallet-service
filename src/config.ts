@@ -27,7 +27,6 @@ export interface WalletServiceConfig {
     id: string
     version: string
     url?: string
-    userUrl?: string
   }
   canton: CantonEndpoints & CantonCredentials
   splice: SpliceEndpoints
@@ -186,8 +185,9 @@ export const loadConfig = (): WalletServiceConfig => {
       (name) => name.startsWith(OAUTH_PREFIX) && optional(name) !== undefined,
     )
   const { canton, splice } = wantsOAuth ? resolveOAuth(preset) : resolveStatic()
+  const port = optionalNumber('WALLET_SERVICE_PORT', 3010)
   return {
-    port: optionalNumber('WALLET_SERVICE_PORT', 3010),
+    port,
     corsOrigins: (
       optional('WALLET_SERVICE_CORS_ORIGINS') ??
       optional('WALLET_SERVICE_CORS_ORIGIN') ??
@@ -200,8 +200,7 @@ export const loadConfig = (): WalletServiceConfig => {
     provider: {
       id: optional('WALLET_PROVIDER_ID') ?? 'wallet-service',
       version: optional('WALLET_PROVIDER_VERSION') ?? '0.1.0',
-      url: optional('WALLET_PROVIDER_URL') ?? 'http://localhost:3010',
-      userUrl: optional('WALLET_PROVIDER_USER_URL') ?? 'http://localhost:3010',
+      url: optional('WALLET_PROVIDER_URL') ?? `http://localhost:${port}`,
     },
     canton,
     splice,
