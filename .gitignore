@@ -5,3 +5,14 @@ dist/
 # gitleaks binary, installed by scripts/install-gitleaks.sh
 /bin/
 
+# typescript
+*.tsbuildinfo
+
+# misc
+.DS_Store
+
+# LLM
+CLAUDE.local.md
+AGENTS.local.md
+.claude/settings.local.json
+
