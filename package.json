@@ -18,7 +18,7 @@
   ],
   "scripts": {
     "build": "tsc -p .",
-    "prepare": "tsc -p .",
+    "prepare": "tsc -p . && husky",
     "typecheck": "tsc --noEmit",
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
@@ -35,9 +35,13 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.10",
+    "@commitlint/cli": "^21.2.2",
+    "@commitlint/config-conventional": "^21.2.2",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^25.0.2",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.4.1",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   }
