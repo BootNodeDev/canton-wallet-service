@@ -335,7 +335,6 @@ export const buildProvider = (p: WalletServiceConfig['provider']): Provider => (
   version: p.version,
   providerType: 'remote',
   ...(p.url === undefined ? {} : { url: p.url }),
-  ...(p.userUrl === undefined ? {} : { userUrl: p.userUrl }),
 })
 
 const firstParty = (params: { partyId?: string; actAs?: string[] }): string => {
@@ -616,7 +615,6 @@ export const createRpc = (config: WalletServiceConfig, deps: RpcDependencies = {
       reason: 'No wallet session/account implementation yet.',
       isNetworkConnected: networkStatus.connected,
       ...(networkStatus.reason === undefined ? {} : { networkReason: networkStatus.reason }),
-      ...(config.provider.userUrl === undefined ? {} : { userUrl: config.provider.userUrl }),
     }
   }
 

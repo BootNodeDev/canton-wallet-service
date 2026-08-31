@@ -11,7 +11,6 @@ const baseConfig = () => ({
     id: 'wallet-service',
     version: '0.1.0',
     url: 'http://localhost:3010',
-    userUrl: 'http://localhost:3010',
   },
   // Credentials are a union, so there is no credential-less config to build: every
   // config loadConfig can produce carries either a static token or OAuth.

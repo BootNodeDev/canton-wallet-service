@@ -39,7 +39,6 @@ export type Provider = {
   version?: string
   providerType?: 'browser' | 'desktop' | 'mobile' | 'remote'
   url?: string
-  userUrl?: string
 }
 
 export type ConnectResult = {
@@ -47,7 +46,6 @@ export type ConnectResult = {
   reason?: string
   isNetworkConnected: boolean
   networkReason?: string
-  userUrl?: string
 }
 
 export type Session = {
