@@ -1,0 +1,5 @@
+# Accepted gitleaks findings (git history is scanned in full by CI).
+# Non-production: a fake JWT used as a test fixture, carried over from the
+# cn-dappbooster tree this package was extracted from.
+# A NEW secret produces a new fingerprint and still fails the scan.
+23d4618b2f9f23bf145b96351e400adfa209f6b4:test/canton-token.test.ts:jwt:23

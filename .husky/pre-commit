@@ -4,3 +4,6 @@ echo "Running lint-staged"
 # Splitting it keeps that ordering while letting the gates, all read-only, still run concurrently.
 pnpm exec lint-staged --config .lintstagedrc.format.mjs
 pnpm exec lint-staged
+
+. "$(dirname "$0")/gitleaks.sh"
+gitleaks git --redact --staged --verbose
