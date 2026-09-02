@@ -910,86 +910,20 @@ describe('CIP-56 token helpers', () => {
     )
   })
 
-  it('lists Amulet holding summaries through Scan without listing UTXOs', async () => {
-    // Scenario: CC/Amulet balances should use Scan's aggregate endpoint so the
-    // wallet can show a balance without walking every Holding UTXO.
-    const calls: { url: string; body?: unknown }[] = []
-    const rpc = createRpc(baseConfig(), {
-      now: () => new Date('2026-06-10T12:00:00.000Z'),
-      sdkFactory: async () => {
-        throw new Error('SDK should not list UTXOs for Amulet summary')
-      },
-      fetch: async (url, init) => {
-        calls.push({
-          url: String(url),
-          body: init?.body === undefined ? undefined : JSON.parse(String(init.body)),
-        })
-        return new Response(
-          JSON.stringify({
-            summaries: [
-              {
-                party_id: 'receiver::party',
-                total_unlocked_coin: '7.0000000000',
-                total_locked_coin: '2.0000000000',
-                total_coin_holdings: '9.0000000000',
-                accumulated_holding_fees_unlocked: '0.1000000000',
-                accumulated_holding_fees_locked: '0.2000000000',
-                accumulated_holding_fees_total: '0.3000000000',
-                total_available_coin: '8.7000000000',
-              },
-            ],
-            record_time: '2026-06-10T12:00:00.000Z',
-            migration_id: 0,
-          }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        )
-      },
-    })
-
-    const res = (await rpc.handle({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'cip56.listHoldingSummary',
-      params: { partyId: 'receiver::party', instrumentId: { id: 'Amulet' } },
-    })) as JsonRpcResponse
-
-    assert.ok('result' in res)
-    assert.deepEqual(res.result, [
-      {
-        key: 'unknown-admin:Amulet',
-        tokenLabel: 'Amulet',
-        instrumentId: { id: 'Amulet' },
-        totalAmount: '8.7000000000',
-        source: 'scan',
-        scan: {
-          totalUnlockedCoin: '7.0000000000',
-          totalLockedCoin: '2.0000000000',
-          totalCoinHoldings: '9.0000000000',
-          accumulatedHoldingFeesUnlocked: '0.1000000000',
-          accumulatedHoldingFeesLocked: '0.2000000000',
-          accumulatedHoldingFeesTotal: '0.3000000000',
-          totalAvailableCoin: '8.7000000000',
-        },
-      },
-    ])
-    assert.equal(calls.length, 1)
-    assert.equal(calls[0]?.url, 'http://scan.localhost:4000/api/scan/v0/holdings/summary')
-    assert.deepEqual(calls[0]?.body, {
-      migration_id: 0,
-      record_time: '2026-06-10T12:00:00.000Z',
-      record_time_match: 'at_or_before',
-      owner_party_ids: ['receiver::party'],
-    })
-  })
-
-  it('falls back to UTXO summaries when Scan cannot summarize Amulet', async () => {
-    // Scenario: local Scan may be unavailable or lagging. The summary RPC must still
-    // return a correct balance by falling back to the ACS holdings read.
+  it('summarizes Amulet balances from the ACS snapshot, never from Scan', async () => {
+    // Scenario: Scan aggregates hourly snapshots, so an Amulet balance read must come
+    // from the live ACS like every other token, without an extra Scan round trip.
     const holdings = [
       holdingView('1', '4.0000000000'),
       holdingView('2', '3.0000000000', { holders: ['validator::party'] }),
     ]
-    const rpc = createRpc(baseConfig(), { fetch: ledgerAcsFetch([holdings]).fetch })
+    let scanCalled = false
+    const rpc = createRpc(baseConfig(), {
+      fetch: ledgerAcsFetch([holdings], () => {
+        scanCalled = true
+        return new Response('{}')
+      }).fetch,
+    })
 
     const res = (await rpc.handle({
       jsonrpc: '2.0',
@@ -1009,9 +943,9 @@ describe('CIP-56 token helpers', () => {
         lockedCount: 1,
         unlockedCount: 1,
         holdings: expectedHoldings(holdings),
-        source: 'utxos',
       },
     ])
+    assert.equal(scanCalled, false)
   })
 
   it('summarizes non-Amulet tokens from UTXOs without calling Scan', async () => {
@@ -1055,7 +989,6 @@ describe('CIP-56 token helpers', () => {
         lockedCount: 0,
         unlockedCount: 1,
         holdings: expectedHoldings([mockToken]),
-        source: 'utxos',
       },
     ])
   })

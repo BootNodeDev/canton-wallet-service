@@ -114,7 +114,7 @@ These add Canton token-standard reads and transfers plus Amulet (Canton Coin) pr
 
 | Method | Purpose |
 | --- | --- |
-| `cip56.listHoldingSummary` | Per-instrument token balance summaries for a party (Amulet summaries via scan proxy; other tokens via holding UTXOs). |
+| `cip56.listHoldingSummary` | Per-instrument token balance summaries for a party, from the participant's active contract snapshot. |
 | `cip56.listHoldings` | Raw token holding UTXOs for a party. |
 | `cip56.listPendingTransfers` | Pending incoming CIP-56 transfer instructions for a party. |
 | `cip56.createTransfer` | Prepares a token transfer for the caller to sign and execute. |

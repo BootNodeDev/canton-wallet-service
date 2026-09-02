@@ -246,16 +246,6 @@ type TokenHoldingSummary = {
   lockedCount?: number
   unlockedCount?: number
   holdings?: TokenHolding[]
-  source: 'scan' | 'utxos'
-  scan?: {
-    totalUnlockedCoin: string
-    totalLockedCoin: string
-    totalCoinHoldings: string
-    accumulatedHoldingFeesUnlocked: string
-    accumulatedHoldingFeesLocked: string
-    accumulatedHoldingFeesTotal: string
-    totalAvailableCoin: string
-  }
 }
 
 type AmuletPreapprovalStatus = {
@@ -427,14 +417,6 @@ const optionalInstrumentParam = (p: Record<string, unknown>): TokenInstrumentId 
   }
 }
 
-// Identifies CC/Amulet requests, the only token family Scan can summarize.
-const isAmuletInstrument = (instrumentId?: TokenInstrumentId): boolean =>
-  instrumentId === undefined ||
-  instrumentId.id === undefined ||
-  ['amulet', 'amt', 'cantoncoin', 'canton coin', 'cc'].includes(
-    instrumentId.id.trim().toLowerCase(),
-  )
-
 // Creates the same grouping key the wallet uses for token rows.
 const instrumentKey = (instrumentId?: TokenInstrumentId): string =>
   `${instrumentId?.admin ?? 'unknown-admin'}:${instrumentId?.id ?? 'unknown-token'}`
@@ -546,7 +528,6 @@ const summarizeHoldingUtxos = (
         lockedCount,
         unlockedCount: tokenHoldings.length - lockedCount,
         holdings: tokenHoldings,
-        source: 'utxos' as const,
       }
     })
     .sort((a, b) => a.tokenLabel.localeCompare(b.tokenLabel))
@@ -829,82 +810,10 @@ export const createRpc = (config: WalletServiceConfig, deps: RpcDependencies = {
     return await listHoldingUtxos(requiredStringParam(p, 'partyId'))
   }
 
-  // Uses Scan's Amulet aggregate endpoint for fast CC balances.
-  const scanAmuletHoldingSummary = async (
-    partyId: string,
-    instrumentId?: TokenInstrumentId,
-  ): Promise<TokenHoldingSummary[]> => {
-    const url = `${config.splice.scanApiUrl.replace(/\/$/, '')}/v0/holdings/summary`
-    const token = await cantonTokenProvider.getToken()
-    const response = await fetchImpl(url, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        migration_id: 0,
-        record_time: now().toISOString(),
-        record_time_match: 'at_or_before',
-        owner_party_ids: [partyId],
-      }),
-    })
-    if (!response.ok) {
-      throw new Error(`Scan holdings summary failed with HTTP ${response.status}`)
-    }
-    const parsed = (await response.json()) as {
-      summaries?: Array<{
-        party_id: string
-        total_unlocked_coin: string
-        total_locked_coin: string
-        total_coin_holdings: string
-        accumulated_holding_fees_unlocked: string
-        accumulated_holding_fees_locked: string
-        accumulated_holding_fees_total: string
-        total_available_coin: string
-      }>
-    }
-    const summary = parsed.summaries?.find((item) => item.party_id === partyId)
-    if (summary === undefined) {
-      return []
-    }
-    const normalizedInstrument = {
-      ...(instrumentId?.admin === undefined ? {} : { admin: instrumentId.admin }),
-      id: instrumentId?.id ?? 'Amulet',
-    }
-    return [
-      {
-        key: instrumentKey(normalizedInstrument),
-        tokenLabel: instrumentLabel(normalizedInstrument),
-        instrumentId: normalizedInstrument,
-        totalAmount: summary.total_available_coin,
-        source: 'scan',
-        scan: {
-          totalUnlockedCoin: summary.total_unlocked_coin,
-          totalLockedCoin: summary.total_locked_coin,
-          totalCoinHoldings: summary.total_coin_holdings,
-          accumulatedHoldingFeesUnlocked: summary.accumulated_holding_fees_unlocked,
-          accumulatedHoldingFeesLocked: summary.accumulated_holding_fees_locked,
-          accumulatedHoldingFeesTotal: summary.accumulated_holding_fees_total,
-          totalAvailableCoin: summary.total_available_coin,
-        },
-      },
-    ]
-  }
-
-  // Routes Amulet summaries through Scan and falls back to UTXOs when Scan is unavailable.
   const cip56ListHoldingSummary = async (params: unknown): Promise<TokenHoldingSummary[]> => {
     const p = objectParam<Record<string, unknown>>(params, 'cip56.listHoldingSummary')
     const partyId = requiredStringParam(p, 'partyId')
-    const instrumentId = optionalInstrumentParam(p)
-    if (isAmuletInstrument(instrumentId)) {
-      try {
-        return await scanAmuletHoldingSummary(partyId, instrumentId)
-      } catch (error) {
-        console.warn('[wallet-service] scan holding summary fallback', errorData(error))
-      }
-    }
-    return summarizeHoldingUtxos(await listHoldingUtxos(partyId), instrumentId)
+    return summarizeHoldingUtxos(await listHoldingUtxos(partyId), optionalInstrumentParam(p))
   }
 
   const cip56AcceptTransfer = async (
