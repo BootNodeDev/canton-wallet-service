@@ -269,6 +269,27 @@ type AmuletPreapprovalStatus = {
 const TRANSFER_PREAPPROVAL_PROPOSAL_TEMPLATE_ID =
   '#splice-wallet:Splice.Wallet.TransferPreapproval:TransferPreapprovalProposal'
 const HOLDING_INTERFACE_ID = '#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding'
+
+const holdingEventFormat = (partyId: string) => ({
+  filtersByParty: {
+    [partyId]: {
+      cumulative: [
+        {
+          identifierFilter: {
+            InterfaceFilter: {
+              value: {
+                interfaceId: HOLDING_INTERFACE_ID,
+                includeInterfaceView: true,
+                includeCreatedEventBlob: false,
+              },
+            },
+          },
+        },
+      ],
+    },
+  },
+  verbose: false,
+})
 const TRANSFER_PREAPPROVAL_PROPOSAL_MAX_ATTEMPTS = 31
 const TRANSFER_PREAPPROVAL_PROPOSAL_RETRY_MS = 1_000
 const AMULET_TAP_AMOUNT = '100'
@@ -501,7 +522,9 @@ const summarizeHoldingUtxos = (
   const groups = new Map<string, TokenHolding[]>()
   for (const holding of filterHoldingsByInstrument(holdings, requestedInstrument)) {
     const key = instrumentKey(holding.interfaceViewValue?.instrumentId ?? requestedInstrument)
-    groups.set(key, [...(groups.get(key) ?? []), holding])
+    const group = groups.get(key)
+    if (group === undefined) groups.set(key, [holding])
+    else group.push(holding)
   }
   return [...groups.entries()]
     .map(([key, tokenHoldings]) => {
@@ -761,49 +784,33 @@ export const createRpc = (config: WalletServiceConfig, deps: RpcDependencies = {
   // the whole update stream (`continueUntilCompletion`, thousands of requests per read) or
   // returns one response bounded by the participant's `http-list-max-elements-limit`.
   const listHoldingUtxos = async (partyId: string): Promise<TokenHolding[]> => {
+    // A page token is only valid against the offset and event format of the request that
+    // issued it, and a first page that lets the participant pick its own offset hands back
+    // a token the next page is refused for, so the offset is read and pinned up front.
     const { offset } = (await ledgerApi({
       resource: '/v2/state/ledger-end',
       requestMethod: 'get',
     })) as { offset: number }
-    const eventFormat = {
-      filtersByParty: {
-        [partyId]: {
-          cumulative: [
-            {
-              identifierFilter: {
-                InterfaceFilter: {
-                  value: {
-                    interfaceId: HOLDING_INTERFACE_ID,
-                    includeInterfaceView: true,
-                    includeCreatedEventBlob: false,
-                  },
-                },
-              },
-            },
-          ],
-        },
-      },
-      verbose: false,
-    }
+    const eventFormat = holdingEventFormat(partyId)
     const holdings: TokenHolding[] = []
     let pageToken: string | undefined
     do {
-      // A page token is only valid against the offset and event format that issued it, so
-      // the offset is pinned up front instead of letting each page resolve its own.
       const page = (await ledgerApi({
         resource: '/v2/state/active-contracts-page',
         requestMethod: 'post',
-        body: {
-          eventFormat,
-          activeAtOffset: offset,
-          ...(pageToken === undefined ? {} : { pageToken }),
-        },
+        body: { eventFormat, activeAtOffset: offset, pageToken },
       })) as ActiveContractsPage
       for (const entry of page.activeContracts ?? []) {
         const activeContract = entry.contractEntry?.JsActiveContract
         const createdEvent = activeContract?.createdEvent
-        const interfaceViewValue = createdEvent?.interfaceViews?.[0]?.viewValue
-        if (createdEvent === undefined || interfaceViewValue === undefined) continue
+        if (createdEvent === undefined) continue
+        // The request asks for one interface view per contract. A contract without it means
+        // the participant could not render the holding, and dropping it would understate a
+        // balance, so the read fails instead.
+        const interfaceViewValue = createdEvent.interfaceViews?.[0]?.viewValue
+        if (interfaceViewValue === undefined) {
+          throw new Error(`Holding ${createdEvent.contractId} has no ${HOLDING_INTERFACE_ID} view`)
+        }
         holdings.push({
           contractId: createdEvent.contractId,
           activeContract,
@@ -811,7 +818,8 @@ export const createRpc = (config: WalletServiceConfig, deps: RpcDependencies = {
           fetchedAtOffset: offset,
         })
       }
-      pageToken = page.nextPageToken ?? undefined
+      // Documented as optional and possibly empty, so an empty token ends the read too.
+      pageToken = page.nextPageToken || undefined
     } while (pageToken !== undefined)
     return holdings
   }

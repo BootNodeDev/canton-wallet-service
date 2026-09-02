@@ -34,17 +34,23 @@ const jsonResponse = (value: unknown) =>
     headers: { 'content-type': 'application/json' },
   })
 
+const ACS_OFFSET = 42
+
 const holdingView = (suffix: string, amount: string, lock: unknown = null) => ({
   contractId: `holding-cid-${suffix}`,
   viewValue: {
     owner: 'receiver::party',
-    amount: `${amount}000000000`,
+    amount,
     instrumentId: { admin: 'admin::party', id: 'Amulet' },
     lock,
   },
 })
 
 type HoldingFixture = { contractId: string; viewValue: Record<string, unknown> }
+
+const activeContract = ({ contractId, viewValue }: HoldingFixture) => ({
+  createdEvent: { contractId, interfaceViews: [{ viewValue }] },
+})
 
 // Serves what the ACS holdings read consumes: a ledger end, then one
 // `active-contracts-page` response per page, the last one without a token. Anything else
@@ -53,34 +59,31 @@ const ledgerAcsFetch = (
   pages: HoldingFixture[][],
   onOther: () => Response = () => new Response('scan unavailable', { status: 503 }),
 ) => {
-  const offset = 42
   const pageBodies: { pageToken?: string; activeAtOffset?: number }[] = []
   const remaining = [...pages]
   const fetch = async (url: URL | string, init?: RequestInit): Promise<Response> => {
     const href = String(url)
-    if (href.endsWith('/v2/state/ledger-end')) return jsonResponse({ offset })
+    if (href.endsWith('/v2/state/ledger-end')) return jsonResponse({ offset: ACS_OFFSET })
     if (!href.endsWith('/v2/state/active-contracts-page')) return onOther()
     pageBodies.push(JSON.parse(String(init?.body)))
     const page = remaining.shift() ?? []
     return jsonResponse({
-      activeContracts: page.map(({ contractId, viewValue }) => ({
-        contractEntry: {
-          JsActiveContract: { createdEvent: { contractId, interfaceViews: [{ viewValue }] } },
-        },
+      activeContracts: page.map((fixture) => ({
+        contractEntry: { JsActiveContract: activeContract(fixture) },
       })),
-      activeAtOffset: offset,
+      activeAtOffset: ACS_OFFSET,
       nextPageToken: remaining.length === 0 ? null : `page-${pages.length - remaining.length}`,
     })
   }
-  return { fetch, pageBodies, offset }
+  return { fetch, pageBodies }
 }
 
 const expectedHoldings = (fixtures: HoldingFixture[]) =>
-  fixtures.map(({ contractId, viewValue }) => ({
-    contractId,
-    activeContract: { createdEvent: { contractId, interfaceViews: [{ viewValue }] } },
-    interfaceViewValue: viewValue,
-    fetchedAtOffset: 42,
+  fixtures.map((fixture) => ({
+    contractId: fixture.contractId,
+    activeContract: activeContract(fixture),
+    interfaceViewValue: fixture.viewValue,
+    fetchedAtOffset: ACS_OFFSET,
   }))
 
 describe('rpc dispatcher', () => {
@@ -880,8 +883,8 @@ describe('CIP-56 token helpers', () => {
     // one response, so a single-page read would under-report the balance. Every page must
     // be followed, against the offset pinned by the first request.
     const ledger = ledgerAcsFetch([
-      [holdingView('1', '4.0'), holdingView('2', '3.0')],
-      [holdingView('3', '2.0')],
+      [holdingView('1', '4.0000000000'), holdingView('2', '3.0000000000')],
+      [holdingView('3', '2.0000000000')],
     ])
     const rpc = createRpc(baseConfig(), { fetch: ledger.fetch })
 
@@ -903,7 +906,7 @@ describe('CIP-56 token helpers', () => {
     )
     assert.deepEqual(
       ledger.pageBodies.map((body) => body.activeAtOffset),
-      [ledger.offset, ledger.offset],
+      [ACS_OFFSET, ACS_OFFSET],
     )
   })
 
@@ -983,8 +986,8 @@ describe('CIP-56 token helpers', () => {
     // Scenario: local Scan may be unavailable or lagging. The summary RPC must still
     // return a correct balance by falling back to the ACS holdings read.
     const holdings = [
-      holdingView('1', '4.0'),
-      holdingView('2', '3.0', { holders: ['validator::party'] }),
+      holdingView('1', '4.0000000000'),
+      holdingView('2', '3.0000000000', { holders: ['validator::party'] }),
     ]
     const rpc = createRpc(baseConfig(), { fetch: ledgerAcsFetch([holdings]).fetch })
 
