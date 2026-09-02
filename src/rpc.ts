@@ -172,9 +172,6 @@ type Cip56TokenSdk = {
         expirationDate?: Date
       }) => Promise<[unknown, unknown[]]>
     }
-    utxos: {
-      list: (params: { partyId: string; includeLocked: boolean }) => Promise<unknown>
-    }
   }
 }
 
@@ -213,13 +210,31 @@ type TokenInstrumentId = {
   id?: string
 }
 
+type TokenHoldingView = {
+  amount?: string
+  instrumentId?: TokenInstrumentId
+  lock?: unknown
+}
+
 type TokenHolding = {
   contractId: string
-  interfaceViewValue?: {
-    amount?: string
-    instrumentId?: TokenInstrumentId
-    lock?: unknown
-  }
+  interfaceViewValue?: TokenHoldingView
+  activeContract?: unknown
+  fetchedAtOffset?: number
+}
+
+type ActiveContractsPage = {
+  activeContracts?: {
+    contractEntry?: {
+      JsActiveContract?: {
+        createdEvent?: {
+          contractId: string
+          interfaceViews?: { viewValue?: TokenHoldingView }[]
+        }
+      }
+    }
+  }[]
+  nextPageToken?: string | null
 }
 
 type TokenHoldingSummary = {
@@ -253,6 +268,7 @@ type AmuletPreapprovalStatus = {
 
 const TRANSFER_PREAPPROVAL_PROPOSAL_TEMPLATE_ID =
   '#splice-wallet:Splice.Wallet.TransferPreapproval:TransferPreapprovalProposal'
+const HOLDING_INTERFACE_ID = '#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding'
 const TRANSFER_PREAPPROVAL_PROPOSAL_MAX_ATTEMPTS = 31
 const TRANSFER_PREAPPROVAL_PROPOSAL_RETRY_MS = 1_000
 const AMULET_TAP_AMOUNT = '100'
@@ -740,13 +756,64 @@ export const createRpc = (config: WalletServiceConfig, deps: RpcDependencies = {
     return await sdk.token.transfer.pending(partyId)
   }
 
-  // Keeps the generic SDK UTXO list behind one helper so Scan fallback cannot diverge.
-  // One ACS snapshot per read: `continueUntilCompletion` replays the whole update stream
-  // instead, and a client-side `limit` truncates the snapshot silently, where the
-  // participant's own cap answers 413.
+  // Keeps the holding UTXO read behind one helper so Scan fallback cannot diverge.
+  // Pages the ACS snapshot rather than calling `sdk.token.utxos.list`: that either replays
+  // the whole update stream (`continueUntilCompletion`, thousands of requests per read) or
+  // returns one response bounded by the participant's `http-list-max-elements-limit`.
   const listHoldingUtxos = async (partyId: string): Promise<TokenHolding[]> => {
-    const sdk = await getTokenSdk()
-    return (await sdk.token.utxos.list({ partyId, includeLocked: true })) as TokenHolding[]
+    const { offset } = (await ledgerApi({
+      resource: '/v2/state/ledger-end',
+      requestMethod: 'get',
+    })) as { offset: number }
+    const eventFormat = {
+      filtersByParty: {
+        [partyId]: {
+          cumulative: [
+            {
+              identifierFilter: {
+                InterfaceFilter: {
+                  value: {
+                    interfaceId: HOLDING_INTERFACE_ID,
+                    includeInterfaceView: true,
+                    includeCreatedEventBlob: false,
+                  },
+                },
+              },
+            },
+          ],
+        },
+      },
+      verbose: false,
+    }
+    const holdings: TokenHolding[] = []
+    let pageToken: string | undefined
+    do {
+      // A page token is only valid against the offset and event format that issued it, so
+      // the offset is pinned up front instead of letting each page resolve its own.
+      const page = (await ledgerApi({
+        resource: '/v2/state/active-contracts-page',
+        requestMethod: 'post',
+        body: {
+          eventFormat,
+          activeAtOffset: offset,
+          ...(pageToken === undefined ? {} : { pageToken }),
+        },
+      })) as ActiveContractsPage
+      for (const entry of page.activeContracts ?? []) {
+        const activeContract = entry.contractEntry?.JsActiveContract
+        const createdEvent = activeContract?.createdEvent
+        const interfaceViewValue = createdEvent?.interfaceViews?.[0]?.viewValue
+        if (createdEvent === undefined || interfaceViewValue === undefined) continue
+        holdings.push({
+          contractId: createdEvent.contractId,
+          activeContract,
+          interfaceViewValue,
+          fetchedAtOffset: offset,
+        })
+      }
+      pageToken = page.nextPageToken ?? undefined
+    } while (pageToken !== undefined)
+    return holdings
   }
 
   const cip56ListHoldings = async (params: unknown): Promise<TokenHolding[]> => {

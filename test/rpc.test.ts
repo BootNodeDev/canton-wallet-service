@@ -28,6 +28,61 @@ const baseConfig = () => ({
   },
 })
 
+const jsonResponse = (value: unknown) =>
+  new Response(JSON.stringify(value), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  })
+
+const holdingView = (suffix: string, amount: string, lock: unknown = null) => ({
+  contractId: `holding-cid-${suffix}`,
+  viewValue: {
+    owner: 'receiver::party',
+    amount: `${amount}000000000`,
+    instrumentId: { admin: 'admin::party', id: 'Amulet' },
+    lock,
+  },
+})
+
+type HoldingFixture = { contractId: string; viewValue: Record<string, unknown> }
+
+// Serves what the ACS holdings read consumes: a ledger end, then one
+// `active-contracts-page` response per page, the last one without a token. Anything else
+// (Scan) falls to `onOther`, so a test can fail Scan and still serve the ledger.
+const ledgerAcsFetch = (
+  pages: HoldingFixture[][],
+  onOther: () => Response = () => new Response('scan unavailable', { status: 503 }),
+) => {
+  const offset = 42
+  const pageBodies: { pageToken?: string; activeAtOffset?: number }[] = []
+  const remaining = [...pages]
+  const fetch = async (url: URL | string, init?: RequestInit): Promise<Response> => {
+    const href = String(url)
+    if (href.endsWith('/v2/state/ledger-end')) return jsonResponse({ offset })
+    if (!href.endsWith('/v2/state/active-contracts-page')) return onOther()
+    pageBodies.push(JSON.parse(String(init?.body)))
+    const page = remaining.shift() ?? []
+    return jsonResponse({
+      activeContracts: page.map(({ contractId, viewValue }) => ({
+        contractEntry: {
+          JsActiveContract: { createdEvent: { contractId, interfaceViews: [{ viewValue }] } },
+        },
+      })),
+      activeAtOffset: offset,
+      nextPageToken: remaining.length === 0 ? null : `page-${pages.length - remaining.length}`,
+    })
+  }
+  return { fetch, pageBodies, offset }
+}
+
+const expectedHoldings = (fixtures: HoldingFixture[]) =>
+  fixtures.map(({ contractId, viewValue }) => ({
+    contractId,
+    activeContract: { createdEvent: { contractId, interfaceViews: [{ viewValue }] } },
+    interfaceViewValue: viewValue,
+    fetchedAtOffset: 42,
+  }))
+
 describe('rpc dispatcher', () => {
   it('returns -32600 when jsonrpc is not "2.0"', async () => {
     const rpc = createRpc(baseConfig())
@@ -820,36 +875,15 @@ describe('CIP-56 token helpers', () => {
     assert.equal(cancelCalled, false)
   })
 
-  it('lists token holding UTXOs through the SDK token namespace without reshaping contracts', async () => {
-    // Scenario: the wallet needs the active CIP-56 holdings for a party, but the
-    // Node-only wallet SDK must stay behind wallet-service. The RPC returns the
-    // SDK holding contracts unchanged so the browser boundary remains thin.
-    const holdingContracts = [
-      {
-        contractId: 'holding-cid-1',
-        interfaceViewValue: {
-          owner: 'receiver::party',
-          amount: '666.0000000000',
-          instrumentId: { admin: 'admin::party', id: 'Amulet' },
-        },
-      },
-    ]
-    const seen: { params?: unknown; tokenConfig?: unknown } = {}
-    const rpc = createRpc(baseConfig(), {
-      sdkFactory: async (options) => {
-        seen.tokenConfig = (options as { token?: unknown }).token
-        return {
-          token: {
-            utxos: {
-              list: async (params: unknown) => {
-                seen.params = params
-                return holdingContracts
-              },
-            },
-          },
-        }
-      },
-    })
+  it('lists token holding UTXOs from every page of the ACS snapshot', async () => {
+    // Scenario: a party can hold more Holding contracts than the participant returns in
+    // one response, so a single-page read would under-report the balance. Every page must
+    // be followed, against the offset pinned by the first request.
+    const ledger = ledgerAcsFetch([
+      [holdingView('1', '4.0'), holdingView('2', '3.0')],
+      [holdingView('3', '2.0')],
+    ])
+    const rpc = createRpc(baseConfig(), { fetch: ledger.fetch })
 
     const res = (await rpc.handle({
       jsonrpc: '2.0',
@@ -859,13 +893,18 @@ describe('CIP-56 token helpers', () => {
     })) as JsonRpcResponse
 
     assert.ok('result' in res)
-    assert.deepEqual(res.result, holdingContracts)
-    assert.deepEqual(seen.params, { partyId: 'receiver::party', includeLocked: true })
-    assert.deepEqual(seen.tokenConfig, {
-      validatorUrl: 'http://localhost:2000/api/validator',
-      auth: { method: 'static', token: 'backend.jwt' },
-      registries: ['http://localhost:2000/api/validator/v0/scan-proxy'],
-    })
+    assert.deepEqual(
+      (res.result as { contractId: string }[]).map((holding) => holding.contractId),
+      ['holding-cid-1', 'holding-cid-2', 'holding-cid-3'],
+    )
+    assert.deepEqual(
+      ledger.pageBodies.map((body) => body.pageToken),
+      [undefined, 'page-1'],
+    )
+    assert.deepEqual(
+      ledger.pageBodies.map((body) => body.activeAtOffset),
+      [ledger.offset, ledger.offset],
+    )
   })
 
   it('lists Amulet holding summaries through Scan without listing UTXOs', async () => {
@@ -942,41 +981,12 @@ describe('CIP-56 token helpers', () => {
 
   it('falls back to UTXO summaries when Scan cannot summarize Amulet', async () => {
     // Scenario: local Scan may be unavailable or lagging. The summary RPC must still
-    // return a correct balance by falling back to the existing SDK UTXO path.
-    const holdingContracts = [
-      {
-        contractId: 'holding-cid-1',
-        interfaceViewValue: {
-          owner: 'receiver::party',
-          amount: '4.0000000000',
-          instrumentId: { admin: 'admin::party', id: 'Amulet' },
-          lock: null,
-        },
-      },
-      {
-        contractId: 'holding-cid-2',
-        interfaceViewValue: {
-          owner: 'receiver::party',
-          amount: '3.0000000000',
-          instrumentId: { admin: 'admin::party', id: 'Amulet' },
-          lock: { holders: ['validator::party'] },
-        },
-      },
+    // return a correct balance by falling back to the ACS holdings read.
+    const holdings = [
+      holdingView('1', '4.0'),
+      holdingView('2', '3.0', { holders: ['validator::party'] }),
     ]
-    const seen: { params?: unknown } = {}
-    const rpc = createRpc(baseConfig(), {
-      fetch: async () => new Response('scan unavailable', { status: 503 }),
-      sdkFactory: async () => ({
-        token: {
-          utxos: {
-            list: async (params: unknown) => {
-              seen.params = params
-              return holdingContracts
-            },
-          },
-        },
-      }),
-    })
+    const rpc = createRpc(baseConfig(), { fetch: ledgerAcsFetch([holdings]).fetch })
 
     const res = (await rpc.handle({
       jsonrpc: '2.0',
@@ -995,44 +1005,29 @@ describe('CIP-56 token helpers', () => {
         utxoCount: 2,
         lockedCount: 1,
         unlockedCount: 1,
-        holdings: holdingContracts,
+        holdings: expectedHoldings(holdings),
         source: 'utxos',
       },
     ])
-    assert.deepEqual(seen.params, { partyId: 'receiver::party', includeLocked: true })
   })
 
   it('summarizes non-Amulet tokens from UTXOs without calling Scan', async () => {
     // Scenario: Scan aggregates only CC/Amulet. Other CIP-56 tokens must use the
     // generic UTXO list and filter by the requested instrument.
     let scanCalled = false
+    const mockToken = {
+      contractId: 'holding-cid-1',
+      viewValue: { amount: '5', instrumentId: { admin: 'issuer::party', id: 'MockToken' } },
+    }
+    const amulet = {
+      contractId: 'holding-cid-2',
+      viewValue: { amount: '99', instrumentId: { admin: 'admin::party', id: 'Amulet' } },
+    }
     const rpc = createRpc(baseConfig(), {
-      fetch: async () => {
+      fetch: ledgerAcsFetch([[mockToken, amulet]], () => {
         scanCalled = true
         return new Response('{}')
-      },
-      sdkFactory: async () => ({
-        token: {
-          utxos: {
-            list: async () => [
-              {
-                contractId: 'holding-cid-1',
-                interfaceViewValue: {
-                  amount: '5',
-                  instrumentId: { admin: 'issuer::party', id: 'MockToken' },
-                },
-              },
-              {
-                contractId: 'holding-cid-2',
-                interfaceViewValue: {
-                  amount: '99',
-                  instrumentId: { admin: 'admin::party', id: 'Amulet' },
-                },
-              },
-            ],
-          },
-        },
-      }),
+      }).fetch,
     })
 
     const res = (await rpc.handle({
@@ -1047,13 +1042,6 @@ describe('CIP-56 token helpers', () => {
 
     assert.ok('result' in res)
     assert.equal(scanCalled, false)
-    const expectedHolding = {
-      contractId: 'holding-cid-1',
-      interfaceViewValue: {
-        amount: '5',
-        instrumentId: { admin: 'issuer::party', id: 'MockToken' },
-      },
-    }
     assert.deepEqual(res.result, [
       {
         key: 'issuer::party:MockToken',
@@ -1063,7 +1051,7 @@ describe('CIP-56 token helpers', () => {
         utxoCount: 1,
         lockedCount: 0,
         unlockedCount: 1,
-        holdings: [expectedHolding],
+        holdings: expectedHoldings([mockToken]),
         source: 'utxos',
       },
     ])
@@ -1223,25 +1211,25 @@ describe('canton credentials', () => {
     // would leave Amulet and token-standard calls presenting an expired credential.
     const tokens = ['first.jwt', 'first.jwt', 'second.jwt']
     const built: string[] = []
-    const listHoldings = {
+    const listPending = {
       jsonrpc: '2.0' as const,
       id: 1,
-      method: 'cip56.listHoldings',
+      method: 'cip56.listPendingTransfers',
       params: { partyId: 'alice::fp' },
     }
     const rpc = createRpc(oauthConfig(), {
       tokenProvider: { getToken: async () => tokens.shift() ?? 'second.jwt' },
       sdkFactory: async (options) => {
         built.push((options as { auth: { token: string } }).auth.token)
-        return { token: { utxos: { list: async () => [] } } }
+        return { token: { transfer: { pending: async () => [] } } }
       },
     })
 
-    await rpc.handle(listHoldings)
-    await rpc.handle(listHoldings)
+    await rpc.handle(listPending)
+    await rpc.handle(listPending)
     assert.deepEqual(built, ['first.jwt'])
 
-    await rpc.handle(listHoldings)
+    await rpc.handle(listPending)
     assert.deepEqual(built, ['first.jwt', 'second.jwt'])
   })
 
