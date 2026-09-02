@@ -173,12 +173,7 @@ type Cip56TokenSdk = {
       }) => Promise<[unknown, unknown[]]>
     }
     utxos: {
-      list: (params: {
-        partyId: string
-        includeLocked: boolean
-        limit: number
-        continueUntilCompletion: boolean
-      }) => Promise<unknown>
+      list: (params: { partyId: string; includeLocked: boolean }) => Promise<unknown>
     }
   }
 }
@@ -745,27 +740,18 @@ export const createRpc = (config: WalletServiceConfig, deps: RpcDependencies = {
     return await sdk.token.transfer.pending(partyId)
   }
 
-  const cip56ListHoldings = async (params: unknown): Promise<unknown> => {
-    const p = objectParam<Record<string, unknown>>(params, 'cip56.listHoldings')
-    const partyId = requiredStringParam(p, 'partyId')
-    const sdk = await getTokenSdk()
-    return await sdk.token.utxos.list({
-      partyId,
-      includeLocked: true,
-      limit: 100,
-      continueUntilCompletion: true,
-    })
-  }
-
   // Keeps the generic SDK UTXO list behind one helper so Scan fallback cannot diverge.
+  // One ACS snapshot per read: `continueUntilCompletion` replays the whole update stream
+  // instead, and a client-side `limit` truncates the snapshot silently, where the
+  // participant's own cap answers 413.
   const listHoldingUtxos = async (partyId: string): Promise<TokenHolding[]> => {
     const sdk = await getTokenSdk()
-    return (await sdk.token.utxos.list({
-      partyId,
-      includeLocked: true,
-      limit: 100,
-      continueUntilCompletion: true,
-    })) as TokenHolding[]
+    return (await sdk.token.utxos.list({ partyId, includeLocked: true })) as TokenHolding[]
+  }
+
+  const cip56ListHoldings = async (params: unknown): Promise<TokenHolding[]> => {
+    const p = objectParam<Record<string, unknown>>(params, 'cip56.listHoldings')
+    return await listHoldingUtxos(requiredStringParam(p, 'partyId'))
   }
 
   // Uses Scan's Amulet aggregate endpoint for fast CC balances.

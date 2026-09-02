@@ -860,12 +860,7 @@ describe('CIP-56 token helpers', () => {
 
     assert.ok('result' in res)
     assert.deepEqual(res.result, holdingContracts)
-    assert.deepEqual(seen.params, {
-      partyId: 'receiver::party',
-      includeLocked: true,
-      limit: 100,
-      continueUntilCompletion: true,
-    })
+    assert.deepEqual(seen.params, { partyId: 'receiver::party', includeLocked: true })
     assert.deepEqual(seen.tokenConfig, {
       validatorUrl: 'http://localhost:2000/api/validator',
       auth: { method: 'static', token: 'backend.jwt' },
@@ -1004,12 +999,7 @@ describe('CIP-56 token helpers', () => {
         source: 'utxos',
       },
     ])
-    assert.deepEqual(seen.params, {
-      partyId: 'receiver::party',
-      includeLocked: true,
-      limit: 100,
-      continueUntilCompletion: true,
-    })
+    assert.deepEqual(seen.params, { partyId: 'receiver::party', includeLocked: true })
   })
 
   it('summarizes non-Amulet tokens from UTXOs without calling Scan', async () => {
