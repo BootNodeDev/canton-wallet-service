@@ -1,6 +1,6 @@
 {
   "name": "@bootnodedev/canton-wallet-service",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "JSON-RPC bridge between a CIP-0103 Canton wallet and a Canton participant",
   "license": "MIT",
   "repository": "github:BootNodeDev/canton-wallet-service",
