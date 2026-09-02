@@ -172,14 +172,6 @@ type Cip56TokenSdk = {
         expirationDate?: Date
       }) => Promise<[unknown, unknown[]]>
     }
-    utxos: {
-      list: (params: {
-        partyId: string
-        includeLocked: boolean
-        limit: number
-        continueUntilCompletion: boolean
-      }) => Promise<unknown>
-    }
   }
 }
 
@@ -218,13 +210,31 @@ type TokenInstrumentId = {
   id?: string
 }
 
+type TokenHoldingView = {
+  amount?: string
+  instrumentId?: TokenInstrumentId
+  lock?: unknown
+}
+
 type TokenHolding = {
   contractId: string
-  interfaceViewValue?: {
-    amount?: string
-    instrumentId?: TokenInstrumentId
-    lock?: unknown
-  }
+  interfaceViewValue?: TokenHoldingView
+  activeContract?: unknown
+  fetchedAtOffset?: number
+}
+
+type ActiveContractsPage = {
+  activeContracts?: {
+    contractEntry?: {
+      JsActiveContract?: {
+        createdEvent?: {
+          contractId: string
+          interfaceViews?: { viewValue?: TokenHoldingView }[]
+        }
+      }
+    }
+  }[]
+  nextPageToken?: string | null
 }
 
 type TokenHoldingSummary = {
@@ -258,6 +268,28 @@ type AmuletPreapprovalStatus = {
 
 const TRANSFER_PREAPPROVAL_PROPOSAL_TEMPLATE_ID =
   '#splice-wallet:Splice.Wallet.TransferPreapproval:TransferPreapprovalProposal'
+const HOLDING_INTERFACE_ID = '#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding'
+
+const holdingEventFormat = (partyId: string) => ({
+  filtersByParty: {
+    [partyId]: {
+      cumulative: [
+        {
+          identifierFilter: {
+            InterfaceFilter: {
+              value: {
+                interfaceId: HOLDING_INTERFACE_ID,
+                includeInterfaceView: true,
+                includeCreatedEventBlob: false,
+              },
+            },
+          },
+        },
+      ],
+    },
+  },
+  verbose: false,
+})
 const TRANSFER_PREAPPROVAL_PROPOSAL_MAX_ATTEMPTS = 31
 const TRANSFER_PREAPPROVAL_PROPOSAL_RETRY_MS = 1_000
 const AMULET_TAP_AMOUNT = '100'
@@ -490,7 +522,9 @@ const summarizeHoldingUtxos = (
   const groups = new Map<string, TokenHolding[]>()
   for (const holding of filterHoldingsByInstrument(holdings, requestedInstrument)) {
     const key = instrumentKey(holding.interfaceViewValue?.instrumentId ?? requestedInstrument)
-    groups.set(key, [...(groups.get(key) ?? []), holding])
+    const group = groups.get(key)
+    if (group === undefined) groups.set(key, [holding])
+    else group.push(holding)
   }
   return [...groups.entries()]
     .map(([key, tokenHoldings]) => {
@@ -745,27 +779,54 @@ export const createRpc = (config: WalletServiceConfig, deps: RpcDependencies = {
     return await sdk.token.transfer.pending(partyId)
   }
 
-  const cip56ListHoldings = async (params: unknown): Promise<unknown> => {
-    const p = objectParam<Record<string, unknown>>(params, 'cip56.listHoldings')
-    const partyId = requiredStringParam(p, 'partyId')
-    const sdk = await getTokenSdk()
-    return await sdk.token.utxos.list({
-      partyId,
-      includeLocked: true,
-      limit: 100,
-      continueUntilCompletion: true,
-    })
+  // Keeps the holding UTXO read behind one helper so Scan fallback cannot diverge.
+  // Pages the ACS snapshot rather than calling `sdk.token.utxos.list`: that either replays
+  // the whole update stream (`continueUntilCompletion`, thousands of requests per read) or
+  // returns one response bounded by the participant's `http-list-max-elements-limit`.
+  const listHoldingUtxos = async (partyId: string): Promise<TokenHolding[]> => {
+    // A page token is only valid against the offset and event format of the request that
+    // issued it, and a first page that lets the participant pick its own offset hands back
+    // a token the next page is refused for, so the offset is read and pinned up front.
+    const { offset } = (await ledgerApi({
+      resource: '/v2/state/ledger-end',
+      requestMethod: 'get',
+    })) as { offset: number }
+    const eventFormat = holdingEventFormat(partyId)
+    const holdings: TokenHolding[] = []
+    let pageToken: string | undefined
+    do {
+      const page = (await ledgerApi({
+        resource: '/v2/state/active-contracts-page',
+        requestMethod: 'post',
+        body: { eventFormat, activeAtOffset: offset, pageToken },
+      })) as ActiveContractsPage
+      for (const entry of page.activeContracts ?? []) {
+        const activeContract = entry.contractEntry?.JsActiveContract
+        const createdEvent = activeContract?.createdEvent
+        if (createdEvent === undefined) continue
+        // The request asks for one interface view per contract. A contract without it means
+        // the participant could not render the holding, and dropping it would understate a
+        // balance, so the read fails instead.
+        const interfaceViewValue = createdEvent.interfaceViews?.[0]?.viewValue
+        if (interfaceViewValue === undefined) {
+          throw new Error(`Holding ${createdEvent.contractId} has no ${HOLDING_INTERFACE_ID} view`)
+        }
+        holdings.push({
+          contractId: createdEvent.contractId,
+          activeContract,
+          interfaceViewValue,
+          fetchedAtOffset: offset,
+        })
+      }
+      // Documented as optional and possibly empty, so an empty token ends the read too.
+      pageToken = page.nextPageToken || undefined
+    } while (pageToken !== undefined)
+    return holdings
   }
 
-  // Keeps the generic SDK UTXO list behind one helper so Scan fallback cannot diverge.
-  const listHoldingUtxos = async (partyId: string): Promise<TokenHolding[]> => {
-    const sdk = await getTokenSdk()
-    return (await sdk.token.utxos.list({
-      partyId,
-      includeLocked: true,
-      limit: 100,
-      continueUntilCompletion: true,
-    })) as TokenHolding[]
+  const cip56ListHoldings = async (params: unknown): Promise<TokenHolding[]> => {
+    const p = objectParam<Record<string, unknown>>(params, 'cip56.listHoldings')
+    return await listHoldingUtxos(requiredStringParam(p, 'partyId'))
   }
 
   // Uses Scan's Amulet aggregate endpoint for fast CC balances.
