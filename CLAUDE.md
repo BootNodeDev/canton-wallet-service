@@ -39,7 +39,8 @@ A consumer-dApp-agnostic Express JSON-RPC bridge between a CIP-0103 wallet and a
 - Keep token handling inside this service boundary. Do not expose the Canton bearer token to the dApp or wallet UI.
 - Canton credentials are a branch, not a choice of one: a static `CANTON_BACKEND_TOKEN` for LocalNet, or `EXTERNAL_OAUTH_*` client credentials for a hosted validator. Everything downstream reads `createTokenProvider`, never a config field, because an OAuth token rotates and an SDK captures its bearer at construction.
 - Configuration is environment-only, read in `src/config.ts`. Never read a consumer's config file.
-- `@canton-network/wallet-sdk` is pinned exact and `@canton-network/core-acs-reader` held at `1.12.0` through the `overrides` block in `pnpm-workspace.yaml`, because the SDK floats that transitive dependency. Bump either deliberately, then re-run the local loop.
+- `@canton-network/wallet-sdk` is pinned exact, but it asks for `^1.x` on every `@canton-network/core-*` package, so a reinstall floats them. Amulet preapproval broke that way. Every core package is pinned in the `overrides` block in `pnpm-workspace.yaml`. Bump them deliberately, then re-run the local loop.
+- `@canton-network/core-splice-client` is a direct dependency because `core-amulet-service` 1.8.0 hid the `ScanProxyClient` it holds. `rpc.ts` builds its own for the `AmuletRules` and `OpenMiningRound` reads. Do not reach into the SDK's private fields for it.
 - Use **pnpm** only (never npm or yarn).
 
 ## Architecture

@@ -58,6 +58,16 @@ only when it still holds the attempt that failed, so a rotation racing a slow re
 discard the instance it just built. Two caches exist: the plain ledger SDK (`getSdk`) and the
 CIP-56/Amulet-configured one (`getTokenSdk`).
 
+### Scan proxy client
+
+`amulet.preapproval.*` needs two Splice Scan contracts, `AmuletRules` and the active
+`OpenMiningRound`. `core-amulet-service` 1.8.0 stopped exposing the client that reads them, so
+`rpc.ts` builds its own `ScanProxyClient` against `SPLICE_VALIDATOR_URL`. One instance is enough:
+it asks its token provider on every request, so a rotated token needs no rebuild.
+
+Note that `ScanProxyClient` caches both contracts in process-lifetime statics with no expiry. A
+network that rotates `AmuletRules` under a long-running container needs a restart.
+
 ### Pending store
 
 Party onboarding spans two requests, and the object the second one needs cannot be handed to the
@@ -69,8 +79,8 @@ to the wallet and comes back to `executePrepared`.
 ### Data access
 
 Everything outbound goes through the wallet SDK or `fetch`, and every path is injectable:
-`createRpc` takes `sdkFactory`, `fetch`, `tokenProvider`, `now` and `sleep` as optional
-dependencies, which is how the suite covers Canton behavior with no participant running.
+`createRpc` takes `sdkFactory`, `fetch`, `tokenProvider`, `scanProxy`, `now` and `sleep` as
+optional dependencies, which is how the suite covers Canton behavior with no participant running.
 
 ## Routes
 
