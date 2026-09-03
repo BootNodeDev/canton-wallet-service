@@ -1,4 +1,5 @@
-import { SDK } from '@canton-network/wallet-sdk'
+import { ScanProxyClient } from '@canton-network/core-splice-client'
+import { type AmuletNamespaceConfig, SDK } from '@canton-network/wallet-sdk'
 import type { WalletServiceConfig } from './config.ts'
 import type { CantonTokenProvider } from './oauthToken.ts'
 import { createTokenProvider } from './tokenProvider.ts'
@@ -95,7 +96,24 @@ type RpcDependencies = {
   now?: () => Date
   sleep?: (ms: number) => Promise<void>
   tokenProvider?: CantonTokenProvider
+  scanProxy?: AmuletScanProxy
 }
+
+// The two Scan reads the Amulet preapproval accept needs. core-amulet-service 1.8.0 made
+// AmuletService a wrapper over a private implementation, so the client it holds is no longer
+// reachable and this service builds its own from `SPLICE_VALIDATOR_URL`.
+type AmuletScanProxy = {
+  getAmuletRules: () => Promise<AmuletContextContract | null | undefined>
+  getActiveOpenMiningRound: () => Promise<AmuletContextContract | null | undefined>
+}
+
+// PreapprovalNamespace keeps its context private, so it is read structurally. Typed from the
+// SDK's own AmuletNamespaceConfig, a field the SDK drops or renames fails `pnpm typecheck`
+// instead of silently reading as undefined.
+type AmuletPreapprovalContext = Pick<
+  AmuletNamespaceConfig,
+  'validatorParty' | 'commonCtx' | 'tokenStandardService'
+>
 
 type ActiveJsContractReader = {
   readJsContracts: (options: {
@@ -110,25 +128,7 @@ type Cip56TokenSdk = {
   amulet?: {
     tap?: (receiver: string, amount: string) => Promise<[unknown, unknown[]]>
     preapproval: {
-      ctx?: {
-        validatorParty?: string
-        commonCtx?: {
-          defaultSynchronizerId?: string
-        }
-        amuletService?: {
-          scanProxyClient?: {
-            getAmuletRules: () => Promise<AmuletContextContract | null | undefined>
-            getActiveOpenMiningRound: () => Promise<AmuletContextContract | null | undefined>
-          }
-          tokenStandard?: {
-            getInputHoldingsCids: (
-              sender: string,
-              inputUtxos?: string[],
-              amount?: unknown,
-            ) => Promise<string[]>
-          }
-        }
-      }
+      ctx?: AmuletPreapprovalContext
       command: {
         create: (args: { parties: { receiver: string } }) => Promise<unknown>
         cancel: (args: { parties: { receiver: string } }) => Promise<[unknown, unknown[]]>
@@ -610,6 +610,23 @@ export const createRpc = (config: WalletServiceConfig, deps: RpcDependencies = {
     })
   })
 
+  // Unlike an SDK, ScanProxyClient asks its token provider on every request, so one instance
+  // outlives token rotation. Its logger silences debug: the client logs whole response bodies
+  // at that level, AmuletRules' created_event_blob included, and the SDK's own logger drops
+  // debug too unless NODE_ENV is development.
+  let cachedScanProxy = deps.scanProxy
+  const getScanProxy = (): AmuletScanProxy =>
+    (cachedScanProxy ??= new ScanProxyClient(
+      new URL(config.splice.validatorUrl),
+      { ...console, debug: () => {} },
+      {
+        getAccessToken: () => cantonTokenProvider.getToken(),
+        getAuthContext: async () => {
+          throw new Error('ScanProxyClient does not need an auth context')
+        },
+      },
+    ))
+
   const ledgerJsonApiVersion = async (): Promise<{ connected: boolean; reason?: string }> => {
     try {
       const response = await fetch(`${config.canton.jsonApiUrl.replace(/\/$/, '')}/v2/version`, {
@@ -882,23 +899,27 @@ export const createRpc = (config: WalletServiceConfig, deps: RpcDependencies = {
     return { commands, disclosedContracts }
   }
 
+  // The Amulet namespace only exists when the SPLICE_* endpoints are configured, so an absent
+  // context is a configuration failure. Which fields it carries is settled by typecheck.
+  const amuletContext = (sdk: Cip56TokenSdk): AmuletPreapprovalContext => {
+    const ctx = sdk.amulet?.preapproval.ctx
+    if (ctx === undefined) {
+      throw new Error('Amulet namespace is not configured')
+    }
+    return ctx
+  }
+
   // Prepares the receiver-signed proposal that asks the validator provider to enable auto-accept.
   const amuletPreapprovalCreate = async (
     params: unknown,
   ): Promise<{ commands: unknown; disclosedContracts: unknown[] }> => {
     const p = objectParam<Record<string, unknown>>(params, 'amulet.preapproval.create')
     const receiver = requiredStringParam(p, 'receiver')
-    const sdk = await getTokenSdk()
-    const ctx = sdk.amulet?.preapproval.ctx
-    const provider = ctx?.validatorParty
-    const scanProxyClient = ctx?.amuletService?.scanProxyClient
-    if (provider === undefined || provider.trim() === '') {
+    const { validatorParty: provider } = amuletContext(await getTokenSdk())
+    if (provider.trim() === '') {
       throw new Error('Amulet validator provider party is unavailable')
     }
-    if (scanProxyClient === undefined) {
-      throw new Error('Amulet service context is unavailable')
-    }
-    const amuletRules = await scanProxyClient.getAmuletRules()
+    const amuletRules = await getScanProxy().getAmuletRules()
     const expectedDso = amuletRules?.payload?.dso
     if (expectedDso === undefined || expectedDso.trim() === '') {
       throw new Error('Amulet DSO party is unavailable')
@@ -954,26 +975,21 @@ export const createRpc = (config: WalletServiceConfig, deps: RpcDependencies = {
     const p = objectParam<Record<string, unknown>>(params, 'amulet.preapproval.acceptProposal')
     const receiver = requiredStringParam(p, 'receiver')
     const sdk = await getTokenSdk()
-    const ctx = sdk.amulet?.preapproval.ctx
-    const provider = ctx?.validatorParty
-    const synchronizerId = ctx?.commonCtx?.defaultSynchronizerId
-    const scanProxyClient = ctx?.amuletService?.scanProxyClient
-    const tokenStandard = ctx?.amuletService?.tokenStandard
+    const { validatorParty: provider, commonCtx, tokenStandardService } = amuletContext(sdk)
+    const synchronizerId = commonCtx.defaultSynchronizerId
     const acsReader = sdk.ledger?.acsReader
     const internalLedger = sdk.ledger?.internal
-    if (provider === undefined || provider.trim() === '') {
+    if (provider.trim() === '') {
       throw new Error('Amulet validator provider party is unavailable')
     }
-    if (synchronizerId === undefined || synchronizerId.trim() === '') {
+    if (synchronizerId.trim() === '') {
       throw new Error('Amulet synchronizer id is unavailable')
-    }
-    if (scanProxyClient === undefined || tokenStandard === undefined) {
-      throw new Error('Amulet service context is unavailable')
     }
     if (acsReader === undefined || internalLedger === undefined) {
       throw new Error('Canton ledger context is unavailable')
     }
-    const amuletRules = await scanProxyClient.getAmuletRules()
+    const scanProxy = getScanProxy()
+    const amuletRules = await scanProxy.getAmuletRules()
     if (amuletRules == null) {
       throw new Error('AmuletRules contract not found')
     }
@@ -985,11 +1001,11 @@ export const createRpc = (config: WalletServiceConfig, deps: RpcDependencies = {
     if (proposal === undefined) {
       throw new Error(`TransferPreapprovalProposal not found for receiver ${receiver}`)
     }
-    const activeRound = await scanProxyClient.getActiveOpenMiningRound()
+    const activeRound = await scanProxy.getActiveOpenMiningRound()
     if (activeRound == null) {
       throw new Error('OpenMiningRound active at current moment not found')
     }
-    const inputHoldings = await tokenStandard.getInputHoldingsCids(provider)
+    const inputHoldings = await tokenStandardService.getInputHoldingsCids(provider)
     const expiresAt =
       optionalDateParam(p, 'expiresAt') ?? new Date(now().getTime() + 90 * 24 * 60 * 60 * 1000)
     const commands = [

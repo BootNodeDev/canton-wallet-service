@@ -86,6 +86,22 @@ const expectedHoldings = (fixtures: HoldingFixture[]) =>
     fetchedAtOffset: ACS_OFFSET,
   }))
 
+// The Amulet context contracts now come from a ScanProxyClient wallet-service builds itself,
+// so they are injected instead of reached through the SDK's Amulet service.
+const scanProxyStub = () => ({
+  getAmuletRules: async () => ({
+    template_id: '#splice-amulet:Splice.AmuletRules:AmuletRules',
+    contract_id: 'amulet-rules-cid',
+    created_event_blob: 'rules-blob',
+    payload: { dso: 'DSO::party' },
+  }),
+  getActiveOpenMiningRound: async () => ({
+    template_id: '#splice-amulet:Splice.Round:OpenMiningRound',
+    contract_id: 'open-round-cid',
+    created_event_blob: 'round-blob',
+  }),
+})
+
 describe('rpc dispatcher', () => {
   it('returns -32600 when jsonrpc is not "2.0"', async () => {
     const rpc = createRpc(baseConfig())
@@ -526,24 +542,9 @@ describe('CIP-56 token helpers', () => {
     // Scenario: the external receiver can only sign the proposal creation. The
     // validator provider accepts that proposal in a separate local-party submit.
     const rpc = createRpc(baseConfig(), {
+      scanProxy: scanProxyStub(),
       sdkFactory: async () => ({
-        amulet: {
-          preapproval: {
-            ctx: {
-              validatorParty: 'provider::party',
-              amuletService: {
-                scanProxyClient: {
-                  getAmuletRules: async () => ({
-                    template_id: '#splice-amulet:Splice.AmuletRules:AmuletRules',
-                    contract_id: 'amulet-rules-cid',
-                    created_event_blob: 'rules-blob',
-                    payload: { dso: 'DSO::party' },
-                  }),
-                },
-              },
-            },
-          },
-        },
+        amulet: { preapproval: { ctx: { validatorParty: 'provider::party' } } },
       }),
     })
 
@@ -571,6 +572,26 @@ describe('CIP-56 token helpers', () => {
       ],
       disclosedContracts: [],
     })
+  })
+
+  it('reports a missing Amulet namespace as configuration when preparing a proposal', async () => {
+    // Scenario: the Amulet namespace is only built when the SPLICE_* endpoints are set. The
+    // guard must name that, and must not depend on any field inside the SDK's Amulet service.
+    const rpc = createRpc(baseConfig(), {
+      scanProxy: scanProxyStub(),
+      sdkFactory: async () => ({}),
+    })
+
+    const res = (await rpc.handle({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'amulet.preapproval.create',
+      params: { receiver: 'receiver::party' },
+    })) as JsonRpcResponse
+
+    assert.ok('error' in res)
+    assert.equal(res.error.code, -32000)
+    assert.equal(res.error.message, 'Amulet namespace is not configured')
   })
 
   it('prepares a fixed DevNet Amulet tap command for the receiver party', async () => {
@@ -612,31 +633,17 @@ describe('CIP-56 token helpers', () => {
     const seen: { acs?: unknown; submit?: unknown; inputOwner?: string } = {}
     const rpc = createRpc(baseConfig(), {
       now: () => new Date('2026-06-10T00:00:00.000Z'),
+      scanProxy: scanProxyStub(),
       sdkFactory: async () => ({
         amulet: {
           preapproval: {
             ctx: {
               validatorParty: 'provider::party',
               commonCtx: { defaultSynchronizerId: 'sync-1' },
-              amuletService: {
-                scanProxyClient: {
-                  getAmuletRules: async () => ({
-                    template_id: '#splice-amulet:Splice.AmuletRules:AmuletRules',
-                    contract_id: 'amulet-rules-cid',
-                    created_event_blob: 'rules-blob',
-                    payload: { dso: 'DSO::party' },
-                  }),
-                  getActiveOpenMiningRound: async () => ({
-                    template_id: '#splice-amulet:Splice.Round:OpenMiningRound',
-                    contract_id: 'open-round-cid',
-                    created_event_blob: 'round-blob',
-                  }),
-                },
-                tokenStandard: {
-                  getInputHoldingsCids: async (owner: string) => {
-                    seen.inputOwner = owner
-                    return ['provider-holding-cid']
-                  },
+              tokenStandardService: {
+                getInputHoldingsCids: async (owner: string) => {
+                  seen.inputOwner = owner
+                  return ['provider-holding-cid']
                 },
               },
             },
@@ -739,29 +746,15 @@ describe('CIP-56 token helpers', () => {
       sleep: async (ms) => {
         slept.push(ms)
       },
+      scanProxy: scanProxyStub(),
       sdkFactory: async () => ({
         amulet: {
           preapproval: {
             ctx: {
               validatorParty: 'provider::party',
               commonCtx: { defaultSynchronizerId: 'sync-1' },
-              amuletService: {
-                scanProxyClient: {
-                  getAmuletRules: async () => ({
-                    template_id: '#splice-amulet:Splice.AmuletRules:AmuletRules',
-                    contract_id: 'amulet-rules-cid',
-                    created_event_blob: 'rules-blob',
-                    payload: { dso: 'DSO::party' },
-                  }),
-                  getActiveOpenMiningRound: async () => ({
-                    template_id: '#splice-amulet:Splice.Round:OpenMiningRound',
-                    contract_id: 'open-round-cid',
-                    created_event_blob: 'round-blob',
-                  }),
-                },
-                tokenStandard: {
-                  getInputHoldingsCids: async () => ['provider-holding-cid'],
-                },
+              tokenStandardService: {
+                getInputHoldingsCids: async () => ['provider-holding-cid'],
               },
             },
           },
