@@ -32,7 +32,8 @@
     "lint:fix": "biome check --write",
     "format": "biome format --write",
     "knip": "knip",
-    "test": "node --test --experimental-strip-types \"test/**/*.test.ts\""
+    "test": "node --test --experimental-strip-types \"test/**/*.test.ts\"",
+    "release": "scripts/release.sh"
   },
   "dependencies": {
     "@canton-network/core-splice-client": "1.10.1",
