@@ -14,8 +14,17 @@ pnpm add -D @bootnodedev/canton-wallet-service
 pnpm exec canton-wallet-service
 ```
 
-The package ships `dist/` prebuilt, so nothing runs at install time. Pin the
-exact version: a release is cut whenever the wire surface changes.
+The package ships `dist/` prebuilt, so nothing of its own runs at install time.
+pnpm may still stop twice, for reasons outside this package:
+
+- `protobufjs`, a dependency of the Canton SDK, has an install script that only
+  prints a version warning. Allow or deny it with `pnpm approve-builds`; pnpm 12
+  refuses `pnpm exec` until that is decided.
+- pnpm 12 holds back versions published less than a day ago
+  (`minimumReleaseAge`). To take a release the same day, list this package
+  under `minimumReleaseAgeExclude` or lower the setting.
+
+Pin the exact version: a release is cut whenever the wire surface changes.
 
 Configuration is environment-only (see `.env.example`), so a consumer supplies
 it however it already supplies env to its own processes.
