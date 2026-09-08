@@ -16,7 +16,7 @@ A consumer-dApp-agnostic Express JSON-RPC bridge between a CIP-0103 wallet and a
 | Runtime | Node >= 24.15 (`.nvmrc`) | `--experimental-strip-types` needs it |
 | HTTP | Express 5 | One process, no framework beyond it |
 | Canton | `@canton-network/wallet-sdk`, pinned exact | See the override note under Working Rules |
-| Package manager | pnpm 11 | Never npm or yarn |
+| Package manager | pnpm 12 | Never npm or yarn |
 | Lint & format | Biome (`biome.json`) | `pnpm run lint` before committing |
 | Dead code | knip (`knip.json`) | `pnpm knip` |
 | Tests | `node:test` | `pnpm test` |
