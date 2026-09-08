@@ -9,19 +9,13 @@ wallet-internal party onboarding.
 
 ## Install
 
-Not published to npm yet. Consume it from git, pinned to a tag. No `dist/` is
-committed, so the binary comes from the package's own `prepare` build — and pnpm
-blocks a dependency's build scripts by default, so it has to be allowed through
-before the install produces anything runnable:
-
 ```bash
-pnpm add -D "git+ssh://git@github.com/BootNodeDev/canton-wallet-service.git#v0.2.0"
-pnpm approve-builds          # allow this package's `prepare`, then re-install
+pnpm add -D @bootnodedev/canton-wallet-service
 pnpm exec canton-wallet-service
 ```
 
-pnpm matches a git dependency by its resolved tarball id, so the allowance is
-keyed to a commit sha and moving the tag means re-approving.
+The package ships `dist/` prebuilt, so nothing runs at install time. Pin the
+exact version: a release is cut whenever the wire surface changes.
 
 Configuration is environment-only (see `.env.example`), so a consumer supplies
 it however it already supplies env to its own processes.
@@ -151,3 +145,24 @@ The wallet uses these wallet-internal endpoints:
 
 These endpoints stay outside `/rpc` so the dApp API remains a projection of
 the CIP/OpenRPC surface.
+
+## Releasing
+
+Merging a version bump to `main` is the release. Nothing is published from a
+laptop.
+
+```bash
+pnpm release minor                 # or patch / major: branch release/X.Y.Z, commit "chore: release X.Y.Z"
+git push -u origin release/X.Y.Z   # open the pull request, wait for the checks, merge
+```
+
+On the merge, `.github/workflows/release.yml` sees a version that is not on npm
+yet, runs the same gates as a pull request, publishes, and creates the tag
+`vX.Y.Z` and the GitHub Release with notes since the previous tag. Ordinary
+merges change nothing. A run that failed halfway can be re-run: what already
+exists is skipped.
+
+Publishing needs no token. npm's trusted publishing accepts the identity GitHub
+gives the run, registered on npmjs.com under the package's settings as GitHub
+Actions, repository `BootNodeDev/canton-wallet-service`, workflow `release.yml`.
+Provenance is attached automatically.

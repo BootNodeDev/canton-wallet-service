@@ -17,7 +17,7 @@ and how to run it lives in [`README.md`](./README.md); the working rules live in
 | Lint & format | Biome | Also the formatter; no ESLint or Prettier |
 | Dead code | knip | |
 | Secrets | gitleaks, pinned by `.gitleaks-version` | |
-| Packaging | pnpm, git dependency | `prepare` builds `dist/`, `bin` exposes `canton-wallet-service` |
+| Packaging | npm, `@bootnodedev/canton-wallet-service` | `files` ships `dist/` and `.env.example`, `bin` exposes `canton-wallet-service` |
 
 ## Project Structure
 
@@ -149,10 +149,13 @@ refuses every Canton call is the worse outcome.
 | `pnpm run lint` / `lint:fix` | Biome check, with or without `--write` |
 | `pnpm knip` | Unused files, exports and dependencies |
 | `pnpm run prepare` | Builds `dist/` and installs the husky hooks |
+| `pnpm release <bump>` | Opens the release branch and its version commit; see Distribution |
 
 ## Distribution
 
-Not on npm. Consumers install a git dependency pinned to a tag, and pnpm blocks a dependency's
-build scripts by default, so the install needs `pnpm approve-builds` before `prepare` produces a
-runnable binary. `files` ships `dist/` and `.env.example` only. Tag a release whenever the wire
-surface changes.
+Published to npm as `@bootnodedev/canton-wallet-service`. `files` ships `dist/` and `.env.example`
+only, so consumers install a prebuilt binary and nothing runs at install time. Merging a version bump
+to `main` is the release: `pnpm release <patch|minor|major>` opens branch `release/X.Y.Z` with the
+commit `chore: release X.Y.Z`, and once that pull request merges, `.github/workflows/release.yml` runs
+the PR gates, publishes through npm trusted publishing, and creates the tag `vX.Y.Z` and the GitHub
+Release. Ordinary merges change nothing. Cut a release whenever the wire surface changes.
