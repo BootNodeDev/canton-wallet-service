@@ -3,7 +3,10 @@
   "version": "0.2.1",
   "description": "JSON-RPC bridge between a CIP-0103 Canton wallet and a Canton participant",
   "license": "MIT",
-  "repository": "github:BootNodeDev/canton-wallet-service",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BootNodeDev/canton-wallet-service.git"
+  },
   "type": "module",
   "packageManager": "pnpm@12.3.4",
   "engines": {
@@ -16,6 +19,9 @@
     "dist",
     ".env.example"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p .",
     "prepare": "tsc -p . && husky",
