@@ -16,7 +16,7 @@ A consumer-dApp-agnostic Express JSON-RPC bridge between a CIP-0103 wallet and a
 | Runtime | Node >= 24.15 (`.nvmrc`) | `--experimental-strip-types` needs it |
 | HTTP | Express 5 | One process, no framework beyond it |
 | Canton | `@canton-network/wallet-sdk`, pinned exact | See the override note under Working Rules |
-| Package manager | pnpm 11 | Never npm or yarn |
+| Package manager | pnpm 12 | Never npm or yarn |
 | Lint & format | Biome (`biome.json`) | `pnpm run lint` before committing |
 | Dead code | knip (`knip.json`) | `pnpm knip` |
 | Tests | `node:test` | `pnpm test` |
@@ -49,7 +49,7 @@ See [`architecture.md`](architecture.md) for project structure, data flow, and k
 
 ## Distribution
 
-Consumed as a git dependency pinned to a tag; not on npm. `prepare` builds `dist/` and installs the git hooks, `files` ships only `dist/` and `.env.example`, and `bin` exposes `canton-wallet-service`. Tag a release whenever the wire surface changes, so consumers move deliberately.
+Published to npm as `@bootnodedev/canton-wallet-service`. `files` ships only `dist/` and `.env.example`, `bin` exposes `canton-wallet-service`, and `prepare` builds `dist/` and installs the git hooks. Merging a version bump to `main` is the release: `pnpm release <bump>` opens that pull request, and once it lands `release.yml` publishes through npm trusted publishing and creates the tag and the GitHub Release. Cut a release whenever the wire surface changes, so consumers move deliberately.
 
 ## Testing
 
@@ -139,7 +139,7 @@ The `create-issue` skill at `.claude/skills/create-issue/` applies these labels 
 ## Change Strategy
 
 - Prefer small, focused diffs over broad refactors
-- Preserve the wire surface unless the task explicitly changes it; a change to it means a new tag
+- Preserve the wire surface unless the task explicitly changes it; a change to it means a new release
 - Avoid introducing new patterns when a project pattern already exists
 - Update docs only when behavior or workflow changes
 

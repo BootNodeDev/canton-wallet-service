@@ -3,9 +3,12 @@
   "version": "0.2.1",
   "description": "JSON-RPC bridge between a CIP-0103 Canton wallet and a Canton participant",
   "license": "MIT",
-  "repository": "github:BootNodeDev/canton-wallet-service",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BootNodeDev/canton-wallet-service.git"
+  },
   "type": "module",
-  "packageManager": "pnpm@11.22.0",
+  "packageManager": "pnpm@12.3.4",
   "engines": {
     "node": ">=24.15.0"
   },
@@ -16,6 +19,9 @@
     "dist",
     ".env.example"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p .",
     "prepare": "tsc -p . && husky",
@@ -26,7 +32,8 @@
     "lint:fix": "biome check --write",
     "format": "biome format --write",
     "knip": "knip",
-    "test": "node --test --experimental-strip-types \"test/**/*.test.ts\""
+    "test": "node --test --experimental-strip-types \"test/**/*.test.ts\"",
+    "release": "scripts/release.sh"
   },
   "dependencies": {
     "@canton-network/core-splice-client": "1.10.1",

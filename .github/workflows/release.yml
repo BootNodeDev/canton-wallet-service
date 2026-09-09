@@ -1,0 +1,108 @@
+name: release
+
+# Merging a version bump to main is the release. `pnpm release <bump>` opens
+# that pull request; once it lands here, this publishes the new version to npm
+# and creates the tag and the GitHub Release. Ordinary merges change nothing.
+on:
+  push:
+    branches: [main]
+
+# One release at a time, never cancelled mid-publish.
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+# Deny by default; each job grants itself what it needs.
+permissions: {}
+
+# Publishing runs `prepare`, which builds and then installs the git hooks;
+# HUSKY=0 makes that install a no-op, as in pr.yml.
+env:
+  HUSKY: 0
+
+jobs:
+  check:
+    name: is this version released?
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.state.outputs.version }}
+      published: ${{ steps.state.outputs.published }}
+      tagged: ${{ steps.state.outputs.tagged }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-tags: true
+          persist-credentials: false
+      # Two facts drive everything below, kept separate so a run that failed
+      # between publishing and tagging can be re-run and finish the job.
+      - id: state
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          on_npm=$(npm view "$name@$version" version 2>/dev/null || true)
+          if [ -n "$on_npm" ]; then
+            published=true
+          else
+            published=false
+          fi
+          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            tagged=true
+          else
+            tagged=false
+          fi
+          echo "$name@$version: published=$published tagged=$tagged"
+          {
+            echo "version=$version"
+            echo "published=$published"
+            echo "tagged=$tagged"
+          } >> "$GITHUB_OUTPUT"
+
+  release:
+    name: publish ${{ needs.check.outputs.version }}
+    needs: check
+    if: needs.check.outputs.published == 'false' || needs.check.outputs.tagged == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # the tag and the GitHub Release
+      id-token: write # npm trusted publishing (OIDC); provenance comes with it
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the previous tag bounds the release notes
+          fetch-tags: true
+          persist-credentials: false # nothing here pushes, so the token stays out of .git/config
+      - run: corepack enable
+      # No registry-url: it writes an auth-token placeholder into .npmrc, which
+      # breaks trusted publishing. Node 24 bundles npm 11, above the 11.5.1 minimum.
+      # No dependency cache either: what gets published must come from a fresh install.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - run: pnpm install --frozen-lockfile
+
+      # The same gates a pull request runs.
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm run build
+      - run: pnpm knip
+
+      - name: Publish to npm
+        if: needs.check.outputs.published == 'false'
+        run: npm publish
+
+      - name: Tag and create the GitHub Release
+        if: needs.check.outputs.tagged == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          previous=$(git describe --tags --abbrev=0 2>/dev/null || true)
+          if [ -n "$previous" ]; then
+            gh release create "v$VERSION" --target "$GITHUB_SHA" --generate-notes --notes-start-tag "$previous"
+          else
+            gh release create "v$VERSION" --target "$GITHUB_SHA" --generate-notes
+          fi
